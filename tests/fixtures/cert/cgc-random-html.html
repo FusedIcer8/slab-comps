@@ -1,0 +1,16 @@
+<!-- Fixture: a 200 response whose markup doesn't match the expected
+     CGC cert-lookup shape at all — no .cert-not-found marker, no
+     .card-name-value / .grade-value fields. Simulates CGC changing their
+     page markup or returning an unrelated page (e.g. a maintenance
+     notice) while still responding 200. -->
+<html>
+  <head><title>CGC Cards</title></head>
+  <body>
+    <div class="site-header">
+      <nav>Some unrelated navigation</nav>
+    </div>
+    <div class="maintenance-notice">
+      <p>We're currently performing scheduled maintenance. Please check back later.</p>
+    </div>
+  </body>
+</html>

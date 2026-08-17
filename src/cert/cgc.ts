@@ -10,10 +10,14 @@ const ENDPOINT = 'https://www.cgccards.com/certlookup'
  * copy and cert-lookup-* class conventions are taken from CGC's own
  * (unblocked) homepage, where the same lookup component is embedded.
  */
-function parseCgcCertPage(html: string): CertRecord | null {
+/** Sentinel distinguishing an explicit not-found marker from an unmappable
+ *  page (present but missing/unparseable required fields). */
+const CGC_NOT_FOUND = Symbol('cgc-not-found')
+
+function parseCgcCertPage(html: string): CertRecord | null | typeof CGC_NOT_FOUND {
   const $ = load(html)
 
-  if ($('.cert-not-found').length > 0) return null
+  if ($('.cert-not-found').length > 0) return CGC_NOT_FOUND
 
   const cardName = $('.card-name-value').first().text().trim()
   const gradeText = $('.grade-value').first().text().trim()
@@ -46,8 +50,16 @@ function parseCgcCertPage(html: string): CertRecord | null {
  * Look up a cert via CGC's public cert-lookup page. Transport errors
  * (network failure, non-2xx status) THROW — callers relying on
  * stale-if-error semantics need the throw to distinguish "couldn't check"
- * from "checked and it's not there". A 200 whose DOM matches the
- * not-found shape is a confirmed miss and maps to found:false.
+ * from "checked and it's not there".
+ *
+ * found:false is reserved for an EXPLICIT not-found shape only: a 200 page
+ * whose DOM contains the `.cert-not-found` marker. Any other 200 that
+ * doesn't map cleanly (parsed but neither the not-found marker nor an
+ * extractable cardName+grade) is an unrecognized response shape — CGC
+ * changed something we don't understand, and reporting that as a confident
+ * not-found would let v3 persist a red "not found" verdict on a possibly
+ * genuine cert. So it throws instead, and v3's catch turns that into an
+ * honest "unavailable" with no stamp.
  */
 export async function getCgcCertRecord(
   certNumber: string,
@@ -60,10 +72,13 @@ export async function getCgcCertRecord(
   }
 
   const html = await res.text()
-  const record = parseCgcCertPage(html)
-  if (!record) {
+  const parsed = parseCgcCertPage(html)
+  if (parsed === CGC_NOT_FOUND) {
     return { found: false, record: null, source: 'cgc-page', errors: [] }
   }
+  if (parsed === null) {
+    throw new Error('unrecognized CGC response shape')
+  }
 
-  return { found: true, record, source: 'cgc-page', errors: [] }
+  return { found: true, record: parsed, source: 'cgc-page', errors: [] }
 }

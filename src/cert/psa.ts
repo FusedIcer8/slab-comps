@@ -23,6 +23,9 @@ function parseGradeNumber(cardGrade: string): string | null {
   return match ? match[1] : null
 }
 
+/** Maps a present PSACert to a CertRecord. Returns null only when required
+ *  fields (grade) are missing/unparseable — callers must treat that as an
+ *  unrecognized shape, NOT a not-found. */
 function mapPsaCert(cert: NonNullable<PSACertPayload['PSACert']>): CertRecord | null {
   const gradeNumber = cert.CardGrade ? parseGradeNumber(cert.CardGrade) : null
   if (!gradeNumber) return null
@@ -37,10 +40,18 @@ function mapPsaCert(cert: NonNullable<PSACertPayload['PSACert']>): CertRecord | 
 
 /**
  * Look up a cert via PSA's public API. Transport errors (network failure,
- * non-2xx/404 status other than a confirmed-empty cert) THROW — callers that
- * need stale-if-error semantics rely on the throw to distinguish "couldn't
- * check" from "checked and it's not there". A 200 with an empty/absent
- * PSACert, or a 404, is a confirmed miss and maps to found:false.
+ * non-2xx status other than 404) THROW — callers that need stale-if-error
+ * semantics rely on the throw to distinguish "couldn't check" from "checked
+ * and it's not there".
+ *
+ * found:false is reserved for EXPLICIT not-found shapes only: an HTTP 404,
+ * or a 200 whose parsed JSON has PSACert null/absent. Any other 200 that
+ * doesn't map cleanly (PSACert present but required fields missing or the
+ * grade is unparseable) is an unrecognized response shape — PSA changed
+ * something we don't understand, and reporting that as a confident
+ * not-found would let v3 persist a red "not found" verdict on a possibly
+ * genuine cert. So it throws instead, and v3's catch turns that into an
+ * honest "unavailable" with no stamp.
  */
 export async function getPsaCertRecord(
   certNumber: string,
@@ -61,13 +72,13 @@ export async function getPsaCertRecord(
   }
 
   const body = (await res.json()) as PSACertPayload
-  if (!body.PSACert) {
+  if (body.PSACert === null || body.PSACert === undefined) {
     return { found: false, record: null, source: 'psa-api', errors: [] }
   }
 
   const record = mapPsaCert(body.PSACert)
   if (!record) {
-    return { found: false, record: null, source: 'psa-api', errors: [] }
+    throw new Error('unrecognized PSA response shape')
   }
 
   return { found: true, record, source: 'psa-api', errors: [] }

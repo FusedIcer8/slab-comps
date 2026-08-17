@@ -89,6 +89,16 @@ describe('getCertRecord — PSA', () => {
       ),
     ).rejects.toThrow('network down')
   })
+
+  it('throws (not found:false) when a 200 has PSACert present but required fields are missing/unparseable', async () => {
+    const fetchImpl = mockFetch(fixture('psa-found-wrong-fields.json'))
+    await expect(
+      getCertRecord(
+        { grader: 'PSA', certNumber: '82575087' },
+        { psaToken: 'test-token', fetchImpl },
+      ),
+    ).rejects.toThrow('unrecognized PSA response shape')
+  })
 })
 
 describe('getCertRecord — CGC', () => {
@@ -128,5 +138,12 @@ describe('getCertRecord — CGC', () => {
     await expect(
       getCertRecord({ grader: 'CGC', certNumber: '4310968001' }, { fetchImpl }),
     ).rejects.toThrow('network down')
+  })
+
+  it('throws (not found:false) when a 200 page has no not-found marker and no extractable cardName+grade', async () => {
+    const fetchImpl = mockFetch(fixture('cgc-random-html.html'), { status: 200 })
+    await expect(
+      getCertRecord({ grader: 'CGC', certNumber: '4310968001' }, { fetchImpl }),
+    ).rejects.toThrow('unrecognized CGC response shape')
   })
 })
