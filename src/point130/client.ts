@@ -6,13 +6,28 @@ const ENDPOINT = 'https://back.130point.com/sales/'
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
 
 /** Minimum ms between requests — 130point is a small free service; be polite. */
-const MIN_INTERVAL_MS = 2_000
+export const MIN_INTERVAL_MS = 2_000
 let lastRequestAt = 0
 
-async function throttle(): Promise<void> {
-  const wait = lastRequestAt + MIN_INTERVAL_MS - Date.now()
-  if (wait > 0) await new Promise(r => setTimeout(r, wait))
-  lastRequestAt = Date.now()
+// Concurrency-safe throttle: a promise-chain mutex. The naive version read
+// `lastRequestAt` before its own `await new Promise(setTimeout)`, so two
+// callers invoked without an `await` between them (e.g. Promise.all) both
+// read the same stale value in the same microtask, both computed a
+// non-positive wait, and neither delay was enforced — concurrent callers
+// could fire back-to-back with no spacing at all. Chaining each call after
+// the previous one's full completion (wait included) serializes them.
+let throttleChain: Promise<void> = Promise.resolve()
+
+export function throttle(): Promise<void> {
+  const turn = throttleChain.then(async () => {
+    const wait = lastRequestAt + MIN_INTERVAL_MS - Date.now()
+    if (wait > 0) await new Promise(r => setTimeout(r, wait))
+    lastRequestAt = Date.now()
+  })
+  // Keep the chain alive even if this turn's caller never awaits it —
+  // and don't let one rejection wedge every later caller.
+  throttleChain = turn.catch(() => {})
+  return turn
 }
 
 /** Raw search — returns every sold row 130point has for the query string.
