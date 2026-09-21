@@ -11,5 +11,9 @@ export declare function filterComps(comps: SoldComp[], slab: SlabQuery): SoldCom
  * Median-based summary with IQR outlier trim. Trim only when we have
  * enough rows for quartiles to mean anything (>= 8); below that a bad
  * outlier can't hide anyway and the median resists it.
+ *
+ * Non-USD rows (GBP/EUR/CAD/...) are excluded from the summary — no FX
+ * conversion is performed, so mixing them into a USD median would be
+ * silently wrong. They're still counted, via `excludedNonUsd`.
  */
 export declare function summarizeComps(comps: SoldComp[]): CompSummary | null;

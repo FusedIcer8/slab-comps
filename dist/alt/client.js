@@ -57,6 +57,9 @@ export function mapDocToValuation(doc) {
         subject: doc.subject ?? null,
         cardNumber: doc.cardNumber ?? null,
         gradeKey: doc.gradeKey ?? null,
+        year: doc.year ?? null,
+        variety: doc.variety || null,
+        name: doc.itemName ?? doc.name ?? null,
     };
 }
 /** Search alt's index for listings of this slab; docs carry the model

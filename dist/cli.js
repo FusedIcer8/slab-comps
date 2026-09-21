@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { getSlabComps } from './comps.js';
 function usage() {
-    console.error(`Usage: slab-comps --game <game> --name "<card name>" --grader PSA --grade 10 [--number "4/102"] [--set "<set name>"] [--json]
+    console.error(`Usage: slab-comps --game <game> --name "<card name>" --grader PSA --grade 10 [--number "4/102"] [--set "<set name>"] [--year 1999] [--language english|japanese] [--variant "1st Edition"] [--json]
 
 Games: pokemon pokemon-japan onepiece yugioh mtg lorcana gundam riftbound dragonball`);
     process.exit(1);
@@ -17,6 +17,8 @@ const grader = opt('--grader')?.toUpperCase();
 const grade = opt('--grade');
 if (!game || !cardName || !grader || !grade)
     usage();
+const yearOpt = opt('--year');
+const languageOpt = opt('--language');
 const slab = {
     game,
     cardName,
@@ -24,18 +26,21 @@ const slab = {
     grade,
     cardNumber: opt('--number'),
     setName: opt('--set'),
+    year: yearOpt ? Number(yearOpt) : undefined,
+    language: languageOpt === 'english' || languageOpt === 'japanese' ? languageOpt : undefined,
+    variant: opt('--variant'),
 };
 const result = await getSlabComps(slab);
 if (args.includes('--json')) {
     console.log(JSON.stringify(result, null, 2));
 }
 else {
-    const { alt, point130, recommended, errors } = result;
+    const { alt, point130, recommended, lowConfidence, reasons, errors } = result;
     console.log(`\n${slab.cardName}${slab.cardNumber ? ` #${slab.cardNumber}` : ''} — ${slab.grader} ${slab.grade} (${slab.game})\n`);
     if (alt) {
         const v = alt.valuation;
         console.log(`alt.xyz LT Value : $${v.altValue.toFixed(2)}  (range $${v.lowerBound?.toFixed(0) ?? '?'}–$${v.upperBound?.toFixed(0) ?? '?'})`);
-        console.log(`  matched        : ${v.brand ?? ''} ${v.subject ?? ''} #${v.cardNumber ?? '?'} [${v.gradeKey}]`);
+        console.log(`  matched        : ${v.brand ?? ''} ${v.subject ?? ''} #${v.cardNumber ?? '?'} [${v.gradeKey}]${v.year ? ` (${v.year})` : ''}${v.variety ? ` ${v.variety}` : ''}`);
         const pop = alt.pops.find(p => p.gradingCompany === slab.grader && parseFloat(p.gradeNumber) === parseFloat(slab.grade));
         if (pop)
             console.log(`  population     : ${slab.grader} ${slab.grade} pop ${pop.count}`);
@@ -44,7 +49,7 @@ else {
         console.log('alt.xyz          : no match');
     }
     if (point130) {
-        console.log(`130point median  : $${point130.median.toFixed(2)}  (${point130.count} comps, $${point130.low}–$${point130.high})`);
+        console.log(`130point median  : $${point130.median.toFixed(2)}  (${point130.count} comps, $${point130.low}–$${point130.high}${point130.excludedNonUsd ? `, ${point130.excludedNonUsd} non-USD excluded` : ''})`);
         for (const c of point130.comps.slice(0, 5)) {
             console.log(`  ${c.date?.slice(0, 10) ?? '????-??-??'}  $${String(c.price).padStart(9)}  ${c.saleType ?? ''}  ${c.title.slice(0, 70)}`);
         }
@@ -52,8 +57,11 @@ else {
     else {
         console.log('130point         : no usable comps');
     }
-    if (recommended)
-        console.log(`\nrecommended      : $${recommended.value.toFixed(2)} (${recommended.source})`);
+    if (recommended) {
+        console.log(`\nrecommended      : $${recommended.value.toFixed(2)} (${recommended.source}, n=${recommended.sampleSize})`);
+    }
+    if (lowConfidence)
+        console.log(`  low confidence  : ${reasons.join(', ')}`);
     for (const e of errors)
         console.error(`warning: ${e}`);
 }

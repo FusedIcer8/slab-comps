@@ -1,5 +1,17 @@
-/** Tokens that indicate a multi-card lot — never a single-slab comp. */
-const LOT_RE = /\b(lot|bundle|collection of|x\d{2,})\b/i;
+/** Tokens that indicate a multi-card lot — never a single-slab comp.
+ *  Two independent shapes:
+ *   - word/phrase tokens ("lot", "bundle", "collection of", "and others",
+ *     "+ more")
+ *   - digit-adjacent "x" counts ("x4", "4x") — a bare digit count, not
+ *     card-mechanic suffixes like "EX"/"GX"/"VMAX" (no digit attached) or
+ *     set names like "XY Evolutions"/"Pokemon X & Y" (no digit attached). */
+const LOT_WORD_RE = /\b(lot|bundle|collection of|and others)\b|\+\s*more\b/i;
+const LOT_COUNT_RE = /\bx\s?\d+\b|\b\d+\s?x\b/i;
+const isLot = (title) => LOT_WORD_RE.test(title) || LOT_COUNT_RE.test(title);
+/** 4-digit year token, e.g. inside "2021 Charizard PSA 10". Used only to
+ *  REJECT a title that names a contradicting year — a title with no year
+ *  token at all is ambiguous, not rejected. */
+const YEAR_RE = /\b(19|20)\d{2}\b/g;
 /**
  * Keep only rows that plausibly ARE the queried slab:
  * title must mention the grader, the exact grade, every word of the card
@@ -24,18 +36,27 @@ export function filterComps(comps, slab) {
         .filter(w => w.length > 2);
     return comps.filter(c => {
         const t = c.title.toLowerCase();
-        if (LOT_RE.test(c.title))
+        if (isLot(c.title))
             return false;
         if (!gradeRe.test(c.title))
             return false;
         if (!nameWords.every(w => t.includes(w)))
             return false;
-        // Identity beyond the name: the printed number, or failing that every
-        // set-name word. When the caller gave neither, name+grade is all we have.
-        const numberOk = numberMatches ? numberMatches(c.title) : false;
-        const setOk = setWords.length > 0 && setWords.every(w => t.includes(w));
-        if ((numberMatches || setWords.length > 0) && !numberOk && !setOk)
+        // Each identity signal the caller actually gave is independently
+        // required — AND, not OR. Giving both a number and a set name must
+        // only ever narrow the accepted rows, never widen them past what
+        // either alone would accept (defect: this used to be an OR-rescue,
+        // where a set-name match could rescue a row that failed the number
+        // check, which widens acceptance instead of narrowing it).
+        if (numberMatches && !numberMatches(c.title))
             return false;
+        if (setWords.length > 0 && !setWords.every(w => t.includes(w)))
+            return false;
+        if (slab.year != null) {
+            const titleYears = c.title.match(YEAR_RE);
+            if (titleYears && titleYears.length > 0 && !titleYears.includes(String(slab.year)))
+                return false;
+        }
         return true;
     });
 }
@@ -62,11 +83,17 @@ function buildNumberMatcher(cardNumber) {
  * Median-based summary with IQR outlier trim. Trim only when we have
  * enough rows for quartiles to mean anything (>= 8); below that a bad
  * outlier can't hide anyway and the median resists it.
+ *
+ * Non-USD rows (GBP/EUR/CAD/...) are excluded from the summary — no FX
+ * conversion is performed, so mixing them into a USD median would be
+ * silently wrong. They're still counted, via `excludedNonUsd`.
  */
 export function summarizeComps(comps) {
-    if (comps.length === 0)
+    const usd = comps.filter(c => c.currency === 'USD');
+    const excludedNonUsd = comps.length - usd.length;
+    if (usd.length === 0)
         return null;
-    const sorted = [...comps].sort((a, b) => a.price - b.price);
+    const sorted = [...usd].sort((a, b) => a.price - b.price);
     let kept = sorted;
     if (sorted.length >= 8) {
         const q = (p) => sorted[Math.floor(p * (sorted.length - 1))].price;
@@ -85,5 +112,6 @@ export function summarizeComps(comps) {
         low: kept[0].price,
         high: kept[kept.length - 1].price,
         comps: kept,
+        excludedNonUsd,
     };
 }

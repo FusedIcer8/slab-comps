@@ -7,9 +7,59 @@ without carrying scraper churn.
 ```
 npm run cli -- --game onepiece --name "Monkey D. Luffy" --number "OP01-003" --grader PSA --grade 10
 npm run cli -- --game pokemon-japan --name "Charizard" --number "008" --set "World Champions Pack" --grader PSA --grade 10 --json
+npm run cli -- --game pokemon --name "Charizard" --number "4/102" --year 1999 --grader PSA --grade 9
 ```
 
-Library entry point: `getSlabComps(slab: SlabQuery): Promise<SlabCompsResult>` from `src/index.ts`.
+Library entry point: `getSlabComps(slab: SlabQuery, options?: GetSlabCompsOptions): Promise<SlabCompsResult>` from `src/index.ts`.
+
+## Identity matching
+
+`SlabQuery` takes optional `year`, `language` (`'english' | 'japanese'`,
+defaults to `'japanese'` when `game` is `'pokemon-japan'` and `'english'`
+otherwise) and `variant` (e.g. `"1st Edition"`, `"Unlimited"`,
+`"Shadowless"`, `"Holo"`) fields, alongside the existing `setName`. These
+disambiguate reprint collisions — the same card name and printed number
+reissued in a different set/year, e.g. Base Set Charizard 4/102 (1999)
+vs the 2021 Celebrations Classic Collection reprint of the same number.
+
+- **alt.xyz** (`matchValuation` / `pickValuation` in `src/alt/match.ts`):
+  a card number, when given, is a hard filter (returns null rather than
+  guess when nothing carries it). Among number matches — or the whole
+  candidate set when no number was given — candidates are scored on
+  set-name token overlap, year (exact match preferred; ±1 tolerance only
+  when nothing matches exactly), language (a Japanese hit never outranks
+  an available English one for an English/unspecified query), and
+  variety. `matchValuation` additionally reports `lowConfidence` +
+  machine-readable `reasons` (`'identity_weak'` when no number was given
+  and no other signal meaningfully separates the candidates;
+  `'alt_low_confidence'` when alt's own confidence metric is low).
+- **130point** (`filterComps` in `src/point130/comps.ts`): every identity
+  signal given (number, set name, year) is required independently —
+  AND, not OR. Passing more signals only ever narrows the accepted rows.
+  Rows with no year in the title pass through the year filter (that
+  signal is simply absent, not contradicted); rows whose title names a
+  different year are rejected.
+
+## Result confidence
+
+`SlabCompsResult.recommended` now carries a `sampleSize` (130point's comp
+count, or alt's total population count as the closest available proxy),
+and the top-level result carries `lowConfidence: boolean` +
+`reasons: string[]`:
+
+- `'sources_disagree'` — alt and 130point differ by more than
+  `disagreementRatio` (default 3×; configurable via
+  `getSlabComps(slab, { disagreementRatio })`)
+- `'thin_sample'` — the recommended source's sample size is below
+  `minSample` (default 3; configurable via `{ minSample }`). Source
+  preference stays alt-first by default, except when alt is thin and
+  130point is not, in which case 130point is preferred.
+- `'identity_weak'` / `'alt_low_confidence'` — see above.
+
+`CompSummary` (130point's per-source result) now always carries
+`excludedNonUsd: number` — non-USD rows (GBP/EUR/CAD/…) are excluded
+from the median (no FX conversion is performed anywhere in this
+library) and counted there instead.
 
 ## Sources
 
@@ -43,7 +93,9 @@ Library entry point: `getSlabComps(slab: SlabQuery): Promise<SlabCompsResult>` f
 ## Reliability posture
 
 Both endpoints are undocumented and can change or block at any time.
-Every fetch is throttled (2s between 130point calls), sanity-checked
+Every fetch is throttled (2s between 130point calls, concurrency-safe —
+overlapping callers serialize rather than racing past the throttle),
+sanity-checked
 (tiny page ⇒ explicit "endpoint may have changed" error, never a silent
 empty result), and each source fails independently — `SlabCompsResult`
 always returns, with `errors[]` and null legs. Downstream flow must keep
@@ -54,6 +106,6 @@ refresh. Do not bulk-harvest catalogs through these endpoints.
 
 ## Tests
 
-`npx vitest run` — 22 tests against live-captured fixtures in
-`tests/fixtures/` (no network). `tests/fixtures/capture-alt.ts`
-re-captures Alt pages via Playwright if their DOM shifts.
+`npx vitest run` — 88 tests, fixture/constructed-data only (no network).
+`tests/fixtures/capture-alt.ts` re-captures Alt pages via Playwright if
+their DOM shifts.

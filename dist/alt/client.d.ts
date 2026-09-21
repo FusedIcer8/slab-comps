@@ -19,6 +19,10 @@ interface TypesenseDoc {
     subject?: string;
     cardNumber?: string;
     gradeKey?: string;
+    year?: number;
+    variety?: string;
+    name?: string;
+    itemName?: string;
 }
 export declare function mapDocToValuation(doc: TypesenseDoc): AltValuation | null;
 /** Search alt's index for listings of this slab; docs carry the model
