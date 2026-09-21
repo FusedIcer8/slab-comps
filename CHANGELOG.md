@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.3.0 — 2026-09-20 (fix waves 1-3, fable review FIX-THEN-MERGE ×3)
+
+### Fixed (review pass 3 — N1/N2/N3/N5/N6 CLOSED; N4 reopened + 5 minors)
+
+- **N4 (reopened, pushed offers up)** (`src/alt/match.ts`): `variantMatches`
+  used `some`, so a single generic token decided the match —
+  `variant:"Unlimited Edition"` matched a "1st Edition" holder on the
+  shared "edition" token, returning $250,000 for what should be ~$12,000.
+  Fixed: `GENERIC_VARIETY_TOKENS` (edition/holo/holofoil/foil) stripped
+  before matching; every remaining token required; `UNMARKED_VARIETY_TOKENS`
+  (unlimited/normal, or nothing left after stripping) matches an
+  EMPTY/null variety directly (alt stores Unlimited as null, never the
+  word) — this also fixes `variant:"Unlimited"` always raising
+  `identity_weak` before. Verified against all 9 listed printings.
+- **(a)** bare "25th" now requires "celebrations"/"classic collection",
+  or a matching number+denominator, to count as a reprint marker —
+  JP/KR 25th Anniversary promos no longer slip into no-number
+  Celebrations queries.
+- **(b)** era words (scarlet, violet, sword, shield, sun, moon, white)
+  moved to `GENERIC_SET_TOKENS`; a set name made entirely of era/generic
+  words now falls back to its catalog code prefix ("SWSH", verified
+  alias "S&S") as positive evidence, requiring "promo" too for a
+  promo-type set — fixes both directions: "SWSH Promo"/"S&S Promo"/
+  "Charizard ex 151 SIR" no longer wrongly dropped, and a spelled-out
+  "Sword & Shield Promo" (a real, different JPN starter-set product) no
+  longer wrongly accepted.
+- **(c)** the bare-numerator rescue (`src/point130/comps.ts`) now
+  requires EVERY remaining distinctive token (was: any one) — resolved
+  by (b) alone for the reported case, since era-genericizing already
+  collapses "SV: Scarlet & Violet 151" to just `['151']`.
+- **(d)** a plain "Base Set" query now rejects titles naming "Base Set 2"
+  or "Legendary Collection" outright (mirrors the alt matcher's
+  edition-marker contradiction check), guarded so a query genuinely for
+  "Base Set 2" doesn't reject its own titles. "Base Unlimited" was NOT
+  special-cased — that's also the correct way to title a genuine Base
+  Set Unlimited print, so a blanket rule would create false negatives;
+  skipped with this stated reason.
+- **(e)** two-card combo listings ("… 234/091 + PSA 10 … 020/189") are
+  now rejected: a `+`/`&` "PSA" marker, or two distinct printed
+  numerator/denominator numbers in one title, reads as a multi-card lot.
+
+Real-fixture spot check (`tests/fixtures/130point-charizard-psa10.html`,
+200 rows): 4/102+"Base Set" → 1 (correct, unmarked); 4/102 and no-number
++"Celebrations: Classic Collection" → 6 both times, all reprint-marked;
+no-number+"SWSH: Sword & Shield Promo Cards" → 4, all carry "SWSH###";
+199/165+"SV: Scarlet & Violet 151" → 3, all genuine 151 titles.
+
 ## 0.3.0 — 2026-09-20 (fix wave 1 + fix wave 2, fable review FIX-THEN-MERGE ×2)
 
 Two further review passes fixing defects found reviewing the fixes

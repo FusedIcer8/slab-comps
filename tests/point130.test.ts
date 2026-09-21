@@ -297,11 +297,14 @@ describe('filterComps', () => {
       expect(filterComps([mk('Charizard Black Star Promo PSA 10')], q)).toHaveLength(0)
     })
 
-    it('"SWSH: Sword & Shield Promo Cards" (no number) accepts a title carrying both distinctive tokens', () => {
+    it('(superseded by minor-b) a spelled-out "Sword and Shield" title is now REJECTED — see minor (b)', () => {
+      // "Sword"/"Shield" are now generic era words (real bug: a title
+      // literally reading "Sword & Shield Promo" turned out to be a
+      // different, wrong JPN starter-set product, not proof of the SWSH
+      // Black Star Promo subset — see minor (b) below). The code prefix
+      // ("SWSH"/"S&S") is the real positive evidence now.
       const q = { ...slab, setName: 'SWSH: Sword & Shield Promo Cards' }
-      expect(
-        filterComps([mk('Charizard Sword and Shield Black Star Promo PSA 10')], q),
-      ).toHaveLength(1)
+      expect(filterComps([mk('Charizard Sword and Shield Black Star Promo PSA 10')], q)).toHaveLength(0)
     })
 
     it('"Hidden Fates" #9 rejects a "Shining Fates" title ("fates" is generic; "hidden" is required)', () => {
@@ -365,6 +368,102 @@ describe('filterComps', () => {
     it('a "prefixed/prefixed" range form ("SV107/SV122") satisfies the set via its numerator', () => {
       const q = { ...slab, cardNumber: 'SV107/SV122', setName: 'Shining Fates: Shiny Vault' }
       expect(filterComps([mk('Pokemon Charizard SV107 PSA 10')], q)).toHaveLength(1)
+    })
+  })
+
+  describe('minor (a): "25th" alone is too weak a reprint marker without a matching number', () => {
+    it('rejects a bare "25th Anniversary" promo title for a no-number Celebrations query', () => {
+      const q = { ...slab, setName: 'Celebrations: Classic Collection' }
+      expect(filterComps([mk('2021 Pokemon 25th Anniversary Promo Charizard PSA 10')], q)).toHaveLength(0)
+    })
+
+    it('accepts "25th" alongside a matching number+denominator', () => {
+      const q = { ...slab, cardNumber: '4/102', setName: 'Celebrations: Classic Collection' }
+      expect(filterComps([mk('Charizard 4/102 25th Anniversary PSA 10')], q)).toHaveLength(1)
+    })
+
+    it('still accepts "celebrations"/"classic collection" alone with no number', () => {
+      const q = { ...slab, setName: 'Celebrations: Classic Collection' }
+      expect(
+        filterComps([mk('2021 Pokemon Celebrations Classic Collection Charizard PSA 10')], q),
+      ).toHaveLength(1)
+    })
+  })
+
+  describe('minor (b): era words (scarlet/violet/sword/shield/sun/moon/black/white) are generic; code prefix is positive evidence', () => {
+    it('keeps "Charizard ex 151 SIR" for a no-number "SV: Scarlet & Violet 151" query (era words no longer mandatory)', () => {
+      const q = { ...slab, cardName: 'Charizard ex', setName: 'SV: Scarlet & Violet 151' }
+      expect(filterComps([mk('Charizard ex 151 SIR PSA 10')], q)).toHaveLength(1)
+    })
+
+    it('keeps "SWSH Promo" for a no-number "SWSH: Sword & Shield Promo Cards" query', () => {
+      const q = { ...slab, setName: 'SWSH: Sword & Shield Promo Cards' }
+      expect(filterComps([mk('Charizard SWSH Promo PSA 10')], q)).toHaveLength(1)
+    })
+
+    it('keeps "S&S Promo" for the same query (verified real eBay abbreviation)', () => {
+      const q = { ...slab, setName: 'SWSH: Sword & Shield Promo Cards' }
+      expect(filterComps([mk('Charizard S&S Promo PSA 10')], q)).toHaveLength(1)
+    })
+
+    it('rejects a spelled-out "Sword & Shield Promo" title with no code prefix (the real wrong JPN starter-set match)', () => {
+      const q = { ...slab, setName: 'SWSH: Sword & Shield Promo Cards' }
+      expect(filterComps([mk('Charizard Sword & Shield Promo PSA 10')], q)).toHaveLength(0)
+    })
+
+    it('requires "promo" even with the code prefix present, for a promo-type set', () => {
+      const q = { ...slab, setName: 'SWSH: Sword & Shield Promo Cards' }
+      expect(filterComps([mk('Charizard SWSH045 Darkness Ablaze PSA 10')], q)).toHaveLength(0)
+    })
+  })
+
+  describe('minor (c): a bare-numerator rescue requires the MOST distinctive (post-era-generic) tokens', () => {
+    it('rejects "#199 Scarlet Violet Paldea Evolved" for "SV: Scarlet & Violet 151" + bare-numerator "199"', () => {
+      const q = { ...slab, cardName: 'Charizard', cardNumber: '199', setName: 'SV: Scarlet & Violet 151' }
+      expect(filterComps([mk('Charizard #199 Scarlet Violet Paldea Evolved PSA 10')], q)).toHaveLength(0)
+    })
+
+    it('still accepts a genuine "151" title with the same bare numerator', () => {
+      const q = { ...slab, cardName: 'Charizard', cardNumber: '199', setName: 'SV: Scarlet & Violet 151' }
+      expect(filterComps([mk('Charizard 151 #199 PSA 10')], q)).toHaveLength(1)
+    })
+  })
+
+  describe('minor (d): "Base Set" query rejects titles naming a different known Pokemon product', () => {
+    it('rejects a "Base Set 2" title', () => {
+      const q = { ...slab, cardNumber: '4/102', setName: 'Base Set' }
+      expect(filterComps([mk('Charizard Base Set 2 #4 PSA 10')], q)).toHaveLength(0)
+    })
+
+    it('rejects a "Legendary Collection" title', () => {
+      const q = { ...slab, cardNumber: '4/102', setName: 'Base Set' }
+      expect(filterComps([mk('Charizard Legendary Collection 4/102 PSA 10')], q)).toHaveLength(0)
+    })
+
+    it('still accepts a genuine Base Set title', () => {
+      const q = { ...slab, cardNumber: '4/102', setName: 'Base Set' }
+      expect(filterComps([mk('1999 Pokemon Base Set Charizard 4/102 PSA 10')], q)).toHaveLength(1)
+    })
+  })
+
+  describe('minor (e): two-card combo listings are rejected', () => {
+    it('rejects a "+ PSA" multi-card marker title', () => {
+      const q = { ...slab, cardName: 'Charizard', cardNumber: '020/189' }
+      expect(
+        filterComps([mk('Pikachu 234/091 + PSA 10 Charizard VMAX 020/189 PSA 10')], q),
+      ).toHaveLength(0)
+    })
+
+    it('rejects a title with a second, different n/d number even without a +/& marker', () => {
+      const q = { ...slab, cardName: 'Charizard', cardNumber: '020/189' }
+      expect(
+        filterComps([mk('Charizard VMAX 020/189 PSA 10 Pikachu 234/091 PSA 10')], q),
+      ).toHaveLength(0)
+    })
+
+    it('a single-card title with just its own n/d number is unaffected', () => {
+      const q = { ...slab, cardName: 'Charizard', cardNumber: '020/189' }
+      expect(filterComps([mk('Charizard VMAX 020/189 PSA 10')], q)).toHaveLength(1)
     })
   })
 
@@ -456,14 +555,19 @@ describe('filterComps', () => {
       expect(filterComps([mk('Pokemon Charizard SWSH050 Black Star Promo PSA 10')], q)).toHaveLength(1)
     })
 
-    it('no-number "SWSH: Sword & Shield Promo Cards": only a title with both distinctive tokens survives', () => {
+    it('no-number "SWSH: Sword & Shield Promo Cards": only the code-prefixed title survives (minor (b))', () => {
+      // "Sword and Shield" spelled out is generic era wording and, per
+      // minor (b), is a real WRONG match (a different JPN starter-set
+      // product) — the code prefix ("SWSH") is the actual positive
+      // evidence.
       const q = { ...slab, setName: 'SWSH: Sword & Shield Promo Cards' }
       const rows = [
         mk('Charizard Black Star Promo PSA 10'),
         mk('Charizard Sword and Shield Black Star Promo PSA 10'),
+        mk('Charizard SWSH Black Star Promo PSA 10'),
       ]
       expect(filterComps(rows, q)).toHaveLength(1)
-      expect(filterComps(rows, q)[0].title).toContain('Sword')
+      expect(filterComps(rows, q)[0].title).toContain('SWSH')
     })
 
     it('no-number "Celebrations: Classic Collection": only a reprint-marked title survives', () => {
