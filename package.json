@@ -1,6 +1,6 @@
 {
   "name": "slab-comps",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": false,
   "type": "module",
   "description": "Graded-slab price comps from 130point (eBay solds) and alt.xyz (LT Value, pops). Standalone — consumed by tcg-manager-v3 later.",

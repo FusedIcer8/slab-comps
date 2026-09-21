@@ -11,25 +11,39 @@ function normalizeTokens(s) {
         .split(' ')
         .filter(Boolean);
 }
+/** Tokens that mark a DIFFERENT edition/printing than what the token they
+ *  ride along with implies — "Base Set" and "Base Set 2" share both of the
+ *  query's tokens, but "2" names a real, different, later expansion. Also
+ *  covers "1st"/"Shadowless" riding along in a candidate's brand text for
+ *  the same reason: an unrequested edition marker on the candidate is a
+ *  signal it's a more specific (and possibly wrong) product than asked for. */
+const EDITION_MARKER_TOKENS = new Set(['1st', 'first', 'shadowless', '2', 'ii']);
+const EDITION_TOKEN_PENALTY = 0.5;
 /** Fraction (0..1) of the query set-name's tokens found in the candidate's
- *  set/brand text. Token-overlap rather than exact string match so "Base
- *  Set" matches a candidate brand of "1999 Pokemon Base Set Unlimited". */
+ *  set/brand text, minus a small penalty per unrequested edition-marker
+ *  token on the candidate side (see EDITION_MARKER_TOKENS) — a full token
+ *  overlap must not score identically against a same-named-but-different
+ *  product ("Base Set" vs "Base Set 2"). */
 function setOverlapScore(want, candidate) {
     if (!want || !candidate)
         return 0;
     const wantTokens = normalizeTokens(want);
     if (wantTokens.length === 0)
         return 0;
-    const candTokens = new Set(normalizeTokens(candidate));
-    const hits = wantTokens.filter(t => candTokens.has(t)).length;
-    return hits / wantTokens.length;
+    const wantSet = new Set(wantTokens);
+    const candTokens = normalizeTokens(candidate);
+    const candSet = new Set(candTokens);
+    const hits = wantTokens.filter(t => candSet.has(t)).length;
+    const overlap = hits / wantTokens.length;
+    const extraEditionTokens = candTokens.filter(t => EDITION_MARKER_TOKENS.has(t) && !wantSet.has(t));
+    return overlap - extraEditionTokens.length * EDITION_TOKEN_PENALTY;
 }
 /** alt has no explicit language field; sniff it from the brand/name text.
  *  Good enough for the EN/JP split that actually matters for reprint
  *  collisions — alt's category buckets don't separate them. */
 function detectLanguage(v) {
     const text = `${v.brand ?? ''} ${v.name ?? ''}`.toLowerCase();
-    return /japan/.test(text) ? 'japanese' : 'english';
+    return /\b(japan(ese)?|jpn|jp)\b/.test(text) ? 'japanese' : 'english';
 }
 function wantedLanguage(slab) {
     if (slab.language)
@@ -37,16 +51,30 @@ function wantedLanguage(slab) {
     return slab.game === 'pokemon-japan' ? 'japanese' : 'english';
 }
 /** alt's altValueConfidenceMetric is roughly 0-100 in observed fixtures
- *  (30 = thin comp data, 60-80 = healthy). Below this, flag the pick. */
+ *  (30 = thin comp data, 60-80 = healthy). Below this, flag the pick.
+ *  NOTE: this is a REPORTING signal only (see 'alt_low_confidence' below)
+ *  — it is never used to influence which candidate is picked (see
+ *  scoreCandidate: confidence deliberately does not appear there). */
 const ALT_CONFIDENCE_LOW_THRESHOLD = 50;
 /** Score margin below which the top two candidates are considered tied
  *  (i.e. no discriminator meaningfully separated them). */
 const TIE_MARGIN = 1;
+/** A candidate's variety "tier" for the no-variant-given tiebreak: an
+ *  unmarked/"Unlimited" print is the common, lower-value default (tier 0);
+ *  anything with a specific named edition (1st Edition, Shadowless, ...)
+ *  is a more specific, usually pricier product (tier 1). Never guess
+ *  toward the pricier tier when nothing asked for it. */
+function varietyTier(v) {
+    const norm = (v.variety ?? '').trim().toLowerCase();
+    return norm === '' || norm === 'unlimited' ? 0 : 1;
+}
 function scoreCandidate(v, slab, anyExactYear, wantLang) {
     let score = 0;
-    // Set name: token overlap, weighted heavily — this is the primary
-    // reprint-collision discriminator alongside year.
-    score += setOverlapScore(slab.setName, v.brand) * 4;
+    // Set name: token overlap (minus edition-marker penalty), weighted
+    // heavily — this is the primary reprint-collision discriminator
+    // alongside year, and must outweigh language (see language, below).
+    const SET_WEIGHT = 4;
+    score += setOverlapScore(slab.setName, v.brand) * SET_WEIGHT;
     // Year: exact match is strong; a contradicting year is a strong
     // negative (this is what keeps Base Set '99 and Celebrations '21 apart).
     // ±1 tolerance only applies when no candidate in the pool matches
@@ -61,11 +89,15 @@ function scoreCandidate(v, slab, anyExactYear, wantLang) {
             score -= 5;
     }
     // Language: default English unless the query (or game='pokemon-japan')
-    // says otherwise. A Japanese candidate must not outrank an English one
-    // for an English/unspecified query when an English candidate exists —
-    // achieved by scoring language match/mismatch symmetrically.
-    score += detectLanguage(v) === wantLang ? 3 : -3;
-    // Variety: 1st Edition vs Unlimited, Shadowless, Holo/Reverse.
+    // says otherwise. Deliberately capped well below SET_WEIGHT — this is a
+    // tiebreak, not a real identity signal, so it must never be able to
+    // outweigh a genuine set match (a Japan-exclusive set correctly matched
+    // must not lose to a same-numbered English card from the wrong set).
+    const LANGUAGE_WEIGHT = 1;
+    score += detectLanguage(v) === wantLang ? LANGUAGE_WEIGHT : -LANGUAGE_WEIGHT;
+    // Variety: 1st Edition vs Unlimited, Shadowless, Holo/Reverse — only
+    // scored when the query actually specifies one; otherwise varieties are
+    // resolved by the deterministic tiebreak in matchValuation, never here.
     if (slab.variant) {
         const wantTokens = normalizeTokens(slab.variant);
         const candTokens = v.variety ? normalizeTokens(v.variety) : [];
@@ -75,11 +107,30 @@ function scoreCandidate(v, slab, anyExactYear, wantLang) {
         else if (v.variety)
             score -= 1;
     }
-    // Small tiebreak nudge from alt's own confidence metric — never enough
-    // to override an identity signal above.
-    if (v.confidence != null)
-        score += v.confidence / 1000;
     return score;
+}
+/** Deterministic, conservative tiebreak among candidates that scored
+ *  within TIE_MARGIN of each other (real identity signals didn't separate
+ *  them): when no variant was requested, prefer the empty/Unlimited
+ *  variety tier over a named premium edition; failing that (or when a
+ *  variant WAS requested but candidates still tie), take the LOWEST
+ *  value — overpaying is the costly direction of a wrong guess, never
+ *  the highest. A final, stable fallback (assetId, then array order)
+ *  keeps the result reproducible across input order. */
+function pickFromTieGroup(group, slab) {
+    if (group.length === 1)
+        return group[0].v;
+    const sorted = [...group].sort((a, b) => {
+        if (!slab.variant) {
+            const tierDiff = varietyTier(a.v) - varietyTier(b.v);
+            if (tierDiff !== 0)
+                return tierDiff;
+        }
+        if (a.v.altValue !== b.v.altValue)
+            return a.v.altValue - b.v.altValue;
+        return (a.v.assetId ?? '').localeCompare(b.v.assetId ?? '');
+    });
+    return sorted[0].v;
 }
 /**
  * Pick the valuation that best matches the slab, and report how
@@ -104,17 +155,41 @@ export function matchValuation(valuations, slab) {
     const scored = pool
         .map(v => ({ v, score: scoreCandidate(v, slab, anyExactYear, wantLang) }))
         .sort((a, b) => b.score - a.score);
-    const best = scored[0];
-    const runnerUp = scored[1];
+    const topScore = scored[0].score;
+    // Everyone within TIE_MARGIN of the top score — real identity signals
+    // (set/year/language/variant) didn't meaningfully separate them. This
+    // check applies regardless of whether a card number was given: a
+    // number narrows the pool but says nothing about which VARIETY within
+    // that number is correct (the live-path bug this fixes — the
+    // consuming app rarely passes year/variant, so this tie is common).
+    const tieGroup = scored.filter(s => topScore - s.score < TIE_MARGIN);
+    const best = pickFromTieGroup(tieGroup, slab);
     const reasons = [];
-    const hasDiscriminator = Boolean(slab.setName || slab.year != null || slab.variant);
-    const closeCall = runnerUp != null && best.score - runnerUp.score < TIE_MARGIN;
-    if (!slab.cardNumber && (!hasDiscriminator || closeCall))
+    if (tieGroup.length > 1) {
         reasons.push('identity_weak');
-    if (best.v.confidence != null && best.v.confidence < ALT_CONFIDENCE_LOW_THRESHOLD) {
+        if (!slab.variant) {
+            const varieties = new Set(tieGroup.map(s => (varietyTier(s.v) === 0 ? '' : (s.v.variety ?? '').trim().toLowerCase())));
+            const values = tieGroup.map(s => s.v.altValue);
+            const spread = Math.max(...values) / Math.max(Math.min(...values), 1e-9);
+            if (varieties.size > 1 && spread > 1.5)
+                reasons.push('variety_ambiguous');
+        }
+    }
+    // The picked candidate itself may simply be wrong even with no tie —
+    // e.g. it's the only number match, but it contradicts every other
+    // discriminator the query actually supplied (wrong set AND wrong year).
+    const givenChecks = [];
+    if (slab.setName)
+        givenChecks.push(setOverlapScore(slab.setName, best.brand) <= 0);
+    if (slab.year != null)
+        givenChecks.push(best.year !== slab.year);
+    if (givenChecks.length > 0 && givenChecks.every(Boolean))
+        reasons.push('identity_weak');
+    if (best.confidence != null && best.confidence < ALT_CONFIDENCE_LOW_THRESHOLD) {
         reasons.push('alt_low_confidence');
     }
-    return { valuation: best.v, lowConfidence: reasons.length > 0, reasons };
+    const uniqueReasons = Array.from(new Set(reasons));
+    return { valuation: best, lowConfidence: uniqueReasons.length > 0, reasons: uniqueReasons };
 }
 /** Convenience wrapper over matchValuation for callers that only need the
  *  picked valuation. See matchValuation for confidence signals. */

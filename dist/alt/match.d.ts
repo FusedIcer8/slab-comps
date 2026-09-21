@@ -2,7 +2,7 @@ import type { AltValuation, SlabQuery } from '../types.js';
 export interface AltMatchResult {
     valuation: AltValuation | null;
     lowConfidence: boolean;
-    /** e.g. 'identity_weak', 'alt_low_confidence' */
+    /** 'identity_weak' | 'variety_ambiguous' | 'alt_low_confidence' */
     reasons: string[];
 }
 /**
