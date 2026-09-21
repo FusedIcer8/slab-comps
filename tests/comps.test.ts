@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { buildRecommendation, type AltLeg } from '../src/comps.js'
-import type { AltValuation, CardPop, CompSummary } from '../src/types.js'
+import { buildRecommendation, computeAltSampleSize, type AltLeg } from '../src/comps.js'
+import type { AltValuation, CardPop, CompSummary, SlabQuery } from '../src/types.js'
 
-const mkAlt = (altValue: number, pops: CardPop[] = [], overrides: Partial<AltLeg> = {}): AltLeg => ({
+const mkAlt = (
+  altValue: number,
+  sampleSize: number | undefined,
+  overrides: Partial<AltLeg> = {},
+): AltLeg => ({
   valuation: {
     altValue,
     lowerBound: null,
@@ -17,42 +21,46 @@ const mkAlt = (altValue: number, pops: CardPop[] = [], overrides: Partial<AltLeg
     variety: null,
     name: null,
   } satisfies AltValuation,
-  pops,
+  pops: [],
+  sampleSize,
+  popsUnavailable: false,
   lowConfidence: false,
   reasons: [],
   ...overrides,
 })
 
-const mkPoint130 = (median: number, count: number): CompSummary => ({
+const mkPoint130 = (median: number, count: number, overrides: Partial<CompSummary> = {}): CompSummary => ({
   median,
   count,
   low: median,
   high: median,
   comps: [],
   excludedNonUsd: 0,
+  ...overrides,
 })
 
-const healthyPops: CardPop[] = [{ gradingCompany: 'PSA', gradeNumber: '9', count: 50 }]
+const HEALTHY_N = 50
 
 describe('buildRecommendation', () => {
   it('prefers alt by default when both are present and healthy', () => {
     const { recommended, lowConfidence, reasons } = buildRecommendation(
-      mkAlt(1000, healthyPops),
+      mkAlt(1000, HEALTHY_N),
       mkPoint130(1050, 10),
     )
-    expect(recommended).toEqual({ value: 1000, source: 'alt', sampleSize: 50 })
+    expect(recommended).toEqual({ value: 1000, source: 'alt', sampleSize: 50, sampleKind: 'population' })
     expect(lowConfidence).toBe(false)
     expect(reasons).toEqual([])
   })
 
   it('falls back to 130point when alt is absent', () => {
     const { recommended } = buildRecommendation(null, mkPoint130(500, 10))
-    expect(recommended).toEqual({ value: 500, source: '130point', sampleSize: 10 })
+    expect(recommended).toEqual({ value: 500, source: '130point', sampleSize: 10, sampleKind: 'comps' })
   })
 
   it('falls back to alt when 130point is absent', () => {
-    const { recommended } = buildRecommendation(mkAlt(1000, healthyPops), null)
-    expect(recommended).toEqual({ value: 1000, source: 'alt', sampleSize: 50 })
+    const { recommended } = buildRecommendation(mkAlt(1000, HEALTHY_N), null)
+    expect(recommended?.source).toBe('alt')
+    expect(recommended?.sampleSize).toBe(50)
   })
 
   it('returns null when neither source has data', () => {
@@ -63,35 +71,32 @@ describe('buildRecommendation', () => {
 
   describe('sources_disagree (defect 3)', () => {
     it('flags disagreement beyond the default 3x ratio', () => {
-      const { lowConfidence, reasons } = buildRecommendation(mkAlt(1000, healthyPops), mkPoint130(4000, 10))
+      const { lowConfidence, reasons } = buildRecommendation(mkAlt(1000, HEALTHY_N), mkPoint130(4000, 10))
       expect(lowConfidence).toBe(true)
       expect(reasons).toContain('sources_disagree')
     })
 
     it('does not flag disagreement within the ratio', () => {
-      const { reasons } = buildRecommendation(mkAlt(1000, healthyPops), mkPoint130(2500, 10))
+      const { reasons } = buildRecommendation(mkAlt(1000, HEALTHY_N), mkPoint130(2500, 10))
       expect(reasons).not.toContain('sources_disagree')
     })
 
     it('honors a configured disagreementRatio', () => {
-      const { reasons } = buildRecommendation(mkAlt(1000, healthyPops), mkPoint130(2500, 10), {
+      const { reasons } = buildRecommendation(mkAlt(1000, HEALTHY_N), mkPoint130(2500, 10), {
         disagreementRatio: 2,
       })
       expect(reasons).toContain('sources_disagree')
     })
 
     it('does not change which source is recommended just because they disagree', () => {
-      const { recommended } = buildRecommendation(mkAlt(1000, healthyPops), mkPoint130(4000, 10))
+      const { recommended } = buildRecommendation(mkAlt(1000, HEALTHY_N), mkPoint130(4000, 10))
       expect(recommended?.source).toBe('alt')
     })
   })
 
   describe('thin_sample (defect 3)', () => {
     it('flags thin_sample when the chosen source (alt) has n below minSample', () => {
-      const { lowConfidence, reasons } = buildRecommendation(
-        mkAlt(1000, [{ gradingCompany: 'PSA', gradeNumber: '9', count: 1 }]),
-        null,
-      )
+      const { lowConfidence, reasons } = buildRecommendation(mkAlt(1000, 1), null)
       expect(lowConfidence).toBe(true)
       expect(reasons).toContain('thin_sample')
     })
@@ -107,20 +112,14 @@ describe('buildRecommendation', () => {
     })
 
     it('switches the recommendation to 130point when alt is thin and 130point is not', () => {
-      const { recommended, reasons } = buildRecommendation(
-        mkAlt(1000, [{ gradingCompany: 'PSA', gradeNumber: '9', count: 1 }]),
-        mkPoint130(1050, 20),
-      )
+      const { recommended, reasons } = buildRecommendation(mkAlt(1000, 1), mkPoint130(1050, 20))
       expect(recommended?.source).toBe('130point')
       // the CHOSEN source (130point, n=20) is not thin, so no thin_sample flag
       expect(reasons).not.toContain('thin_sample')
     })
 
     it('keeps alt as recommended when both are thin (no reconciliation possible)', () => {
-      const { recommended } = buildRecommendation(
-        mkAlt(1000, [{ gradingCompany: 'PSA', gradeNumber: '9', count: 1 }]),
-        mkPoint130(1050, 1),
-      )
+      const { recommended } = buildRecommendation(mkAlt(1000, 1), mkPoint130(1050, 1))
       expect(recommended?.source).toBe('alt')
     })
   })
@@ -128,7 +127,7 @@ describe('buildRecommendation', () => {
   describe('identity_weak / alt_low_confidence pass-through (defects 1 & 4)', () => {
     it('surfaces identity_weak from the alt match onto the top-level result', () => {
       const { lowConfidence, reasons } = buildRecommendation(
-        mkAlt(1000, healthyPops, { lowConfidence: true, reasons: ['identity_weak'] }),
+        mkAlt(1000, HEALTHY_N, { lowConfidence: true, reasons: ['identity_weak'] }),
         null,
       )
       expect(lowConfidence).toBe(true)
@@ -137,7 +136,7 @@ describe('buildRecommendation', () => {
 
     it('surfaces alt_low_confidence from the alt match onto the top-level result', () => {
       const { reasons } = buildRecommendation(
-        mkAlt(1000, healthyPops, { lowConfidence: true, reasons: ['alt_low_confidence'] }),
+        mkAlt(1000, HEALTHY_N, { lowConfidence: true, reasons: ['alt_low_confidence'] }),
         null,
       )
       expect(reasons).toContain('alt_low_confidence')
@@ -145,18 +144,117 @@ describe('buildRecommendation', () => {
   })
 
   describe('count/sampleSize is always present per source (defect 5)', () => {
-    it('point130 sampleSize mirrors CompSummary.count', () => {
+    it('point130 sampleSize mirrors CompSummary.count, sampleKind is "comps"', () => {
       const { recommended } = buildRecommendation(null, mkPoint130(500, 17))
       expect(recommended?.sampleSize).toBe(17)
+      expect(recommended?.sampleKind).toBe('comps')
     })
 
-    it('alt sampleSize is the total population count', () => {
-      const pops: CardPop[] = [
-        { gradingCompany: 'PSA', gradeNumber: '9', count: 30 },
-        { gradingCompany: 'PSA', gradeNumber: '10', count: 12 },
-      ]
-      const { recommended } = buildRecommendation(mkAlt(1000, pops), null)
+    it('alt sampleSize is whatever computeAltSampleSize produced, sampleKind is "population"', () => {
+      const { recommended } = buildRecommendation(mkAlt(1000, 42), null)
       expect(recommended?.sampleSize).toBe(42)
+      expect(recommended?.sampleKind).toBe('population')
     })
+  })
+
+  describe('I4: pops-fetch failure is UNKNOWN, never a confirmed thin sample, never silently switches source', () => {
+    it('flags pops_unavailable and pushes it into reasons', () => {
+      const { lowConfidence, reasons } = buildRecommendation(
+        mkAlt(1000, undefined, { popsUnavailable: true }),
+        null,
+      )
+      expect(lowConfidence).toBe(true)
+      expect(reasons).toContain('pops_unavailable')
+    })
+
+    it('does NOT flag thin_sample for an unknown (pops-unavailable) sample', () => {
+      const { reasons } = buildRecommendation(mkAlt(1000, undefined, { popsUnavailable: true }), null)
+      expect(reasons).not.toContain('thin_sample')
+    })
+
+    it('does NOT switch to 130point just because alt pops are unavailable', () => {
+      const { recommended } = buildRecommendation(
+        mkAlt(1000, undefined, { popsUnavailable: true }),
+        mkPoint130(1050, 20),
+      )
+      expect(recommended?.source).toBe('alt')
+    })
+
+    it('reports an undefined sampleSize (not 0) when pops are unavailable', () => {
+      const { recommended } = buildRecommendation(mkAlt(1000, undefined, { popsUnavailable: true }), null)
+      expect(recommended?.sampleSize).toBeUndefined()
+    })
+  })
+
+  describe('M8: year_unconfirmed passes through from point130.yearUnconfirmed', () => {
+    it('flags year_unconfirmed when point130 reports it', () => {
+      const { lowConfidence, reasons } = buildRecommendation(
+        null,
+        mkPoint130(500, 10, { yearUnconfirmed: true }),
+      )
+      expect(lowConfidence).toBe(true)
+      expect(reasons).toContain('year_unconfirmed')
+    })
+
+    it('does not flag year_unconfirmed when absent/false', () => {
+      const { reasons } = buildRecommendation(null, mkPoint130(500, 10))
+      expect(reasons).not.toContain('year_unconfirmed')
+    })
+  })
+
+  describe('M9: options are clamped to sane ranges, else defaults are used', () => {
+    it('ignores a disagreementRatio <= 1 and falls back to the default (3)', () => {
+      const { reasons } = buildRecommendation(mkAlt(1000, HEALTHY_N), mkPoint130(1500, 10), {
+        disagreementRatio: 1,
+      })
+      // 1500/1000 = 1.5x, below the default 3x — must NOT flag despite the
+      // caller passing a degenerate ratio of 1 (would otherwise always fire)
+      expect(reasons).not.toContain('sources_disagree')
+    })
+
+    it('ignores a negative disagreementRatio', () => {
+      const { reasons } = buildRecommendation(mkAlt(1000, HEALTHY_N), mkPoint130(1500, 10), {
+        disagreementRatio: -5,
+      })
+      expect(reasons).not.toContain('sources_disagree')
+    })
+
+    it('ignores a minSample < 1 and falls back to the default (3)', () => {
+      const { reasons } = buildRecommendation(mkAlt(1000, 2), null, { minSample: 0 })
+      // n=2 is still below the default floor of 3
+      expect(reasons).toContain('thin_sample')
+    })
+  })
+})
+
+describe('computeAltSampleSize (defect I4: alt population is per-grade, not summed across every grade)', () => {
+  const slab: SlabQuery = { game: 'pokemon', cardName: 'Charizard', grader: 'PSA', grade: '9', cardNumber: '4' }
+
+  it('uses the queried grader+grade bucket when alt reports one', () => {
+    const pops: CardPop[] = [
+      { gradingCompany: 'PSA', gradeNumber: '9', count: 5 },
+      { gradingCompany: 'PSA', gradeNumber: '10', count: 5000 },
+    ]
+    expect(computeAltSampleSize(pops, slab)).toBe(5)
+  })
+
+  it('falls back to the summed population across all grades when the specific bucket is absent', () => {
+    const pops: CardPop[] = [
+      { gradingCompany: 'PSA', gradeNumber: '8', count: 10 },
+      { gradingCompany: 'PSA', gradeNumber: '10', count: 20 },
+    ]
+    expect(computeAltSampleSize(pops, slab)).toBe(30)
+  })
+
+  it('does not match a different grader\'s bucket for the same grade number', () => {
+    const pops: CardPop[] = [{ gradingCompany: 'BGS', gradeNumber: '9', count: 9999 }]
+    // No PSA-9 bucket, no other bucket to sum either than the BGS one —
+    // falls back to the (only) total, which is the BGS count; this is the
+    // documented coarser fallback, not a false precise match.
+    expect(computeAltSampleSize(pops, slab)).toBe(9999)
+  })
+
+  it('is 0 for an empty pops array', () => {
+    expect(computeAltSampleSize([], slab)).toBe(0)
   })
 })

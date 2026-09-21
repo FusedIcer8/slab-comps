@@ -49,6 +49,7 @@ if (args.includes('--json')) {
     console.log(`  matched        : ${v.brand ?? ''} ${v.subject ?? ''} #${v.cardNumber ?? '?'} [${v.gradeKey}]${v.year ? ` (${v.year})` : ''}${v.variety ? ` ${v.variety}` : ''}`)
     const pop = alt.pops.find(p => p.gradingCompany === slab.grader && parseFloat(p.gradeNumber) === parseFloat(slab.grade))
     if (pop) console.log(`  population     : ${slab.grader} ${slab.grade} pop ${pop.count}`)
+    if (alt.popsUnavailable) console.log('  population     : unavailable (fetch failed — sample size unknown)')
   } else {
     console.log('alt.xyz          : no match')
   }
@@ -61,8 +62,8 @@ if (args.includes('--json')) {
     console.log('130point         : no usable comps')
   }
   if (recommended) {
-    console.log(`\nrecommended      : $${recommended.value.toFixed(2)} (${recommended.source}, n=${recommended.sampleSize})`)
+    console.log(`\nrecommended      : $${recommended.value.toFixed(2)} (${recommended.source}, n=${recommended.sampleSize ?? '?'} ${recommended.sampleKind ?? ''})`)
   }
-  if (lowConfidence) console.log(`  low confidence  : ${reasons.join(', ')}`)
+  if (lowConfidence) console.log(`  low confidence  : ${(reasons ?? []).join(', ')}`)
   for (const e of errors) console.error(`warning: ${e}`)
 }
