@@ -82,6 +82,10 @@ interface TypesenseDoc {
   subject?: string
   cardNumber?: string
   gradeKey?: string
+  year?: number
+  variety?: string
+  name?: string
+  itemName?: string
 }
 
 export function mapDocToValuation(doc: TypesenseDoc): AltValuation | null {
@@ -96,6 +100,9 @@ export function mapDocToValuation(doc: TypesenseDoc): AltValuation | null {
     subject: doc.subject ?? null,
     cardNumber: doc.cardNumber ?? null,
     gradeKey: doc.gradeKey ?? null,
+    year: doc.year ?? null,
+    variety: doc.variety || null,
+    name: doc.itemName ?? doc.name ?? null,
   }
 }
 
