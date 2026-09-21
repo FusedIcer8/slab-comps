@@ -26,9 +26,18 @@ vs the 2021 Celebrations Classic Collection reprint of the same number.
   a card number, when given, is a hard filter (returns null rather than
   guess when nothing carries it). Among number matches — or the whole
   candidate set when no number was given — candidates are scored on
-  set-name token overlap (penalized when the candidate carries an
-  unrequested edition marker like "2"/"Shadowless"/"1st" — "Base Set"
-  must not score identically against "Base Set 2"), year (exact match
+  set-name token overlap: a small verified `SET_NAME_ALIASES` table
+  (alt's own `brand` facet for the genuine 1999 Base Set Charizard is
+  literally `"Pokemon Game"`, not "Base Set" — confirmed live) is
+  applied to both sides of the compare, extra unrequested edition-marker
+  tokens on the candidate ("2"/"Shadowless"/"1st" — "Base Set" must not
+  score identically against "Base Set 2") are penalized, and a
+  `REPRINT_FAMILIES` contradiction check rejects a known reprint-family
+  mismatch outright even when token overlap alone would tie (alt's real
+  brand text for the 2021 Celebrations Classic Collection reprint
+  itself contains the words "Base Set", so overlap alone can't keep
+  them apart — mirrors the same check on the 130point side, title text
+  there instead of brand text). Then year (exact match
   preferred; ±1 tolerance only when nothing matches exactly), language
   (a tiebreak, deliberately weighted below a genuine set match — a
   Japanese hit never outranks an available English one for an

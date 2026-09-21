@@ -19,24 +19,64 @@ function normalizeTokens(s) {
  *  signal it's a more specific (and possibly wrong) product than asked for. */
 const EDITION_MARKER_TOKENS = new Set(['1st', 'first', 'shadowless', '2', 'ii']);
 const EDITION_TOKEN_PENALTY = 0.5;
+/** alt's own `brand` facet text sometimes doesn't match the set name a
+ *  human (or this library's own README/CLI) would naturally pass.
+ *  Verified LIVE against alt's real typesense index (2026-09-20, via
+ *  `node dist/cli.js --game pokemon --name Charizard --number 4/102
+ *  --grader PSA --grade 9 --year 1999`): the genuine 1999 Base Set
+ *  Charizard's `brand` is literally "Pokemon Game", not "Base Set" — a
+ *  caller passing setName:"Base Set" would otherwise score 0 overlap
+ *  against the CORRECT candidate. Applied to both sides of the compare,
+ *  so a query that itself says "Pokemon Game" also still matches. Add
+ *  further entries only once verified the same way — do not guess. */
+const SET_NAME_ALIASES = [[/\bpokemon\s*game\b/i, 'base set']];
+function applySetAliases(s) {
+    return SET_NAME_ALIASES.reduce((out, [re, canonical]) => out.replace(re, canonical), s);
+}
+/** Known reprint families where token overlap alone CANNOT separate the
+ *  two real, differently-valued products — verified live (2026-09-20):
+ *  alt's brand text for the 2021 Celebrations Classic Collection reprint
+ *  is "...Celebrations Classic Collection Base Set" (contains "Base Set"
+ *  itself), so after SET_NAME_ALIASES resolves "Pokemon Game" -> "base
+ *  set", a query for the genuine original scores a FULL, tied overlap
+ *  against both the real 1999 card and the reprint. Mirrors
+ *  REPRINT_FAMILIES in src/point130/comps.ts (title text there, brand
+ *  text here) — add further verified families to both. */
+const REPRINT_FAMILIES = [
+    { original: /\bbase\s*set\b/i, reprint: /\b(celebrations|classic collection|25th)\b/i },
+];
+const REPRINT_CONTRADICTION_PENALTY = 6;
 /** Fraction (0..1) of the query set-name's tokens found in the candidate's
  *  set/brand text, minus a small penalty per unrequested edition-marker
  *  token on the candidate side (see EDITION_MARKER_TOKENS) — a full token
  *  overlap must not score identically against a same-named-but-different
- *  product ("Base Set" vs "Base Set 2"). */
+ *  product ("Base Set" vs "Base Set 2"). Also rejects (heavily penalizes)
+ *  a known reprint-family mismatch even when token overlap alone would
+ *  tie — see REPRINT_FAMILIES. */
 function setOverlapScore(want, candidate) {
     if (!want || !candidate)
         return 0;
-    const wantTokens = normalizeTokens(want);
+    const aliasedWant = applySetAliases(want);
+    const wantTokens = normalizeTokens(aliasedWant);
     if (wantTokens.length === 0)
         return 0;
     const wantSet = new Set(wantTokens);
-    const candTokens = normalizeTokens(candidate);
+    const candTokens = normalizeTokens(applySetAliases(candidate));
     const candSet = new Set(candTokens);
     const hits = wantTokens.filter(t => candSet.has(t)).length;
     const overlap = hits / wantTokens.length;
     const extraEditionTokens = candTokens.filter(t => EDITION_MARKER_TOKENS.has(t) && !wantSet.has(t));
-    return overlap - extraEditionTokens.length * EDITION_TOKEN_PENALTY;
+    let score = overlap - extraEditionTokens.length * EDITION_TOKEN_PENALTY;
+    for (const fam of REPRINT_FAMILIES) {
+        const wantsOriginal = fam.original.test(aliasedWant) && !fam.reprint.test(want);
+        const wantsReprint = fam.reprint.test(want);
+        if (wantsOriginal && fam.reprint.test(candidate))
+            score -= REPRINT_CONTRADICTION_PENALTY;
+        if (wantsReprint && fam.original.test(candidate) && !fam.reprint.test(candidate)) {
+            score -= REPRINT_CONTRADICTION_PENALTY;
+        }
+    }
+    return score;
 }
 /** alt has no explicit language field; sniff it from the brand/name text.
  *  Good enough for the EN/JP split that actually matters for reprint

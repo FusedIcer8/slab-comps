@@ -400,5 +400,34 @@ describe('matchValuation', () => {
       const result = matchValuation([differentSet, correct], q)
       expect(result.valuation?.brand).toBe('Base Set')
     })
+
+    it('recognizes alt\'s real brand text for original Base Set — "Pokemon Game" (verified live 2026-09-20)', () => {
+      // Live-verified via `node dist/cli.js --game pokemon --name Charizard
+      // --number 4/102 --grader PSA --grade 9 --year 1999`: alt's typesense
+      // `brand` facet for the genuine 1999 card is literally "Pokemon Game",
+      // not "Base Set" — a caller passing setName:"Base Set" (the name every
+      // human, and this library's own README, uses) would otherwise score 0
+      // overlap against the CORRECT candidate. NO year given here
+      // deliberately — this must be resolved by set-name matching alone,
+      // not by falling back on the year signal.
+      const q: SlabQuery = {
+        game: 'pokemon',
+        cardName: 'Charizard',
+        cardNumber: '4/102',
+        setName: 'Base Set',
+        grader: 'PSA',
+        grade: '9',
+      }
+      const originalPokemonGame = mk('4', 3665, { brand: 'Pokemon Game', year: 1999 })
+      // Real reprint brand text (also live-verified) — contains "Base Set"
+      // itself, which is exactly why the alias resolves to "base set" and
+      // the edition/contradiction handling still has to keep them apart.
+      const reprint = mk('4', 172, {
+        brand: 'Pokemon Sword and Shield Celebrations Classic Collection Base Set',
+        year: 2021,
+      })
+      const result = matchValuation([reprint, originalPokemonGame], q)
+      expect(result.valuation?.brand).toBe('Pokemon Game')
+    })
   })
 })

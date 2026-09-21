@@ -88,27 +88,30 @@ library's own producer code always sets them.
 - **package-lock.json was still 0.1.0** — resynced via `npm install
   --package-lock-only`.
 
-### Disputed (fixed differently than proposed, or not implemented — with reasoning)
+### Retracted dispute — I7's alias table entry was correct
 
-- **I7's proposed alias table entry ("Base Set" ↔ "Pokemon Game")** —
-  disputed and not added: no fixture evidence supports alt calling Base
-  Set "Pokemon Game". The available fixture evidence
-  (`tests/fixtures/alt-api-capture.json`'s `rawName` field, and
-  `tests/fixtures/alt-item-charizard.html`'s gallery caption) shows alt
-  actually describes the genuine 1999 card as `"1999 Pokemon Base Set
-  1st Edition Shadowless Holo Charizard #4..."` and the 2021 Celebrations
-  reprint as `"...Celebrations Classic Collection Base Set..."` — i.e.
-  BOTH sides of this exact collision contain the literal words "Base
-  Set", which token-overlap alone cannot separate (this is worse than
-  I7's original hypothesis, not better). This is handled instead by the
-  year/reprint-family-contradiction logic (see "alt: set-overlap scored
-  a different product identically" above and the `REPRINT_FAMILIES`
-  table added to `src/point130/comps.ts` for the 130point side); the
-  edition-marker-token penalty I7 also requested (verified reasonable
-  independent of the alias claim) is implemented. No other alias
-  entries could be verified from the fixtures on hand, so the alias
-  table itself was not built out — the code comment above
-  `REPRINT_FAMILIES` documents this and where to add a verified entry.
+An earlier draft of this changelog disputed I7's proposed "Base Set" ↔
+"Pokemon Game" alias, based on two static fixtures
+(`alt-api-capture.json`'s `rawName`, `alt-item-charizard.html`'s gallery
+caption) that don't reflect the `brand` facet this library's own
+`searchAltValuations`/`mapDocToValuation` actually reads. A live CLI
+sanity check against alt's real typesense index (2026-09-20, `node
+dist/cli.js --game pokemon --name Charizard --number 4/102 --grader PSA
+--grade 9 --year 1999`) proved that dispute wrong: alt's real `brand`
+field for the genuine 1999 Base Set Charizard is literally `"Pokemon
+Game"`. I7 was right. The alias is now implemented
+(`SET_NAME_ALIASES` in `src/alt/match.ts`), applied to both sides of the
+compare. A second live check (same query with `--set "Base Set"`, no
+`--year`, so set-name matching alone has to carry it) also showed the
+real reprint's brand text is `"...Celebrations Classic Collection Base
+Set"` — it contains "Base Set" too, which the alias alone can't
+separate, so `src/alt/match.ts` also gained the same `REPRINT_FAMILIES`
+contradiction check already built for the 130point side (title text
+there, brand text here) to keep the two apart regardless. Both live
+checks are reproduced as fixture tests using the exact real brand
+strings observed. No other alias entries could be verified the same
+way, so the table has just this one entry — the code comment documents
+where to add further verified ones.
 
 ### Added (public API, additive; all optional — see § Backward compatibility)
 
