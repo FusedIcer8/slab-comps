@@ -31,16 +31,42 @@ function normalizeVarietyText(s) {
 function varietyHaystack(v) {
     return normalizeVarietyText(`${v.variety ?? ''} ${v.brand ?? ''} ${v.name ?? ''}`);
 }
-/** True if ANY of the query's (normalized) variant tokens appears
- *  anywhere in the candidate's variety haystack — a loose "any token"
- *  match rather than requiring the whole phrase, so a caller's partial
- *  wording ("Shadowless" alone) still matches a fuller variety string
- *  ("1st Edition Shadowless"). */
+/** Words that appear in nearly every TCGplayer/alt variety string and so,
+ *  ALONE, cannot discriminate one printing from another — "Edition"
+ *  rides along in both "1st Edition" and "Unlimited Edition"; "Holo"/
+ *  "Holofoil"/"Foil" ride along in "1st Edition Holofoil", "Reverse
+ *  Holofoil", and bare "Holofoil" itself. Matching on ANY token (the old
+ *  behavior) let variant:"Unlimited Edition" match a "1st Edition" holder
+ *  purely on the shared, meaningless "edition" token — a real reported
+ *  bug that silently returned a $250,000 card for an "Unlimited" request. */
+const GENERIC_VARIETY_TOKENS = new Set(['edition', 'holo', 'holofoil', 'foil']);
+/** "Unlimited" and "Normal" mean "no special edition marking" — alt
+ *  stores this as an EMPTY (or null) `variety` field, never the literal
+ *  word. Treated as a sentinel: a variant that (after stripping generic
+ *  tokens) reduces to just these words — or to nothing at all, as with
+ *  bare "Holofoil" — asks for the plain/unmarked printing, matched
+ *  against the candidate's own EMPTY variety rather than searched for in
+ *  text (searching would almost never find literal "unlimited" text). */
+const UNMARKED_VARIETY_TOKENS = new Set(['unlimited', 'normal']);
+function isUnmarkedVariety(v) {
+    const norm = (v.variety ?? '').trim().toLowerCase();
+    return norm === '' || norm === 'unlimited' || norm === 'normal';
+}
+/** True when the candidate matches the query's variant tokens: an
+ *  "unmarked printing" request (see UNMARKED_VARIETY_TOKENS) matches an
+ *  empty variety; otherwise EVERY remaining significant token (generic
+ *  ones stripped) must appear in the candidate's variety haystack — not
+ *  just one, so "1st Edition Shadowless" requires both "1st" AND
+ *  "shadowless", never either alone. */
 function variantMatches(v, wantTokens) {
     if (wantTokens.length === 0)
         return false;
+    const significant = wantTokens.filter(t => !GENERIC_VARIETY_TOKENS.has(t));
+    if (significant.length === 0 || significant.every(t => UNMARKED_VARIETY_TOKENS.has(t))) {
+        return isUnmarkedVariety(v);
+    }
     const haystack = varietyHaystack(v);
-    return wantTokens.some(t => haystack.includes(t));
+    return significant.every(t => haystack.includes(t));
 }
 /** Tokens that mark a DIFFERENT edition/printing than what the token they
  *  ride along with implies — "Base Set" and "Base Set 2" share both of the
@@ -137,13 +163,13 @@ const ALT_CONFIDENCE_LOW_THRESHOLD = 50;
  *  (i.e. no discriminator meaningfully separated them). */
 const TIE_MARGIN = 1;
 /** A candidate's variety "tier" for the no-variant-given tiebreak: an
- *  unmarked/"Unlimited" print is the common, lower-value default (tier 0);
- *  anything with a specific named edition (1st Edition, Shadowless, ...)
- *  is a more specific, usually pricier product (tier 1). Never guess
- *  toward the pricier tier when nothing asked for it. */
+ *  unmarked/"Unlimited"/"Normal" print is the common, lower-value default
+ *  (tier 0 — see isUnmarkedVariety); anything with a specific named
+ *  edition (1st Edition, Shadowless, ...) is a more specific, usually
+ *  pricier product (tier 1). Never guess toward the pricier tier when
+ *  nothing asked for it. */
 function varietyTier(v) {
-    const norm = (v.variety ?? '').trim().toLowerCase();
-    return norm === '' || norm === 'unlimited' ? 0 : 1;
+    return isUnmarkedVariety(v) ? 0 : 1;
 }
 function scoreCandidate(v, slab, anyExactYear, wantLang, variantWantTokens) {
     let score = 0;

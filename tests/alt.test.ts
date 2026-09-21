@@ -289,6 +289,81 @@ describe('pickValuation', () => {
       expect(result.valuation?.altValue).toBe(20000)
     })
   })
+
+  describe('N4 (final): generic tokens (edition/holo/holofoil/foil) must not decide the match on their own', () => {
+    const q = (variant: string): SlabQuery => ({
+      game: 'pokemon',
+      cardName: 'Charizard',
+      cardNumber: '4/102',
+      grader: 'PSA',
+      grade: '9',
+      variant,
+    })
+    // TCGplayer-style printings. alt stores "Unlimited"/"Normal" (no
+    // special marking) as an EMPTY/null variety, never the literal word.
+    const firstEdHolo = mk('4', 250_000, { brand: 'Base Set', variety: '1st Edition Holofoil' })
+    const unlimitedHolo = mk('4', 12_000, { brand: 'Base Set', variety: null })
+    const reverseHolo = mk('4', 500, { brand: 'Base Set', variety: 'Reverse Holofoil' })
+    const plainHolo = mk('4', 50, { brand: 'Base Set', variety: null })
+    const firstEd = mk('4', 20_000, { brand: 'Base Set', variety: '1st Edition' })
+    const unlimited = mk('4', 8_000, { brand: 'Base Set', variety: null })
+    const shadowless = mk('4', 40_000, { brand: 'Base Set', variety: 'Shadowless' })
+    const firstEdShadowless = mk('4', 30_000, { brand: 'Base Set', variety: '1st Edition Shadowless' })
+
+    it('"1st Edition Holofoil" picks the 1st Edition holder over Unlimited', () => {
+      const result = matchValuation([unlimitedHolo, firstEdHolo], q('1st Edition Holofoil'))
+      expect(result.valuation?.altValue).toBe(250_000)
+    })
+
+    it('"Unlimited Holofoil" picks the empty/Unlimited holder over 1st Edition', () => {
+      const result = matchValuation([firstEdHolo, unlimitedHolo], q('Unlimited Holofoil'))
+      expect(result.valuation?.altValue).toBe(12_000)
+    })
+
+    it('"Reverse Holofoil" picks the Reverse holder over plain Holofoil', () => {
+      const result = matchValuation([plainHolo, reverseHolo], q('Reverse Holofoil'))
+      expect(result.valuation?.altValue).toBe(500)
+    })
+
+    it('"Holofoil" alone (no qualifier) picks the plain/unmarked holder, not Reverse', () => {
+      const result = matchValuation([reverseHolo, plainHolo], q('Holofoil'))
+      expect(result.valuation?.altValue).toBe(50)
+    })
+
+    it('"Normal" picks an empty-variety holder over a non-empty one', () => {
+      const holoNamed = mk('4', 100, { brand: 'Base Set', variety: 'Holofoil' })
+      const normalPrint = mk('4', 20, { brand: 'Base Set', variety: null })
+      const result = matchValuation([holoNamed, normalPrint], q('Normal'))
+      expect(result.valuation?.altValue).toBe(20)
+    })
+
+    it('"1st Edition" picks the 1st Edition holder over Unlimited', () => {
+      const result = matchValuation([unlimited, firstEd], q('1st Edition'))
+      expect(result.valuation?.altValue).toBe(20_000)
+    })
+
+    it('"Unlimited" picks the empty-variety holder, and does NOT raise identity_weak', () => {
+      const result = matchValuation([firstEd, unlimited], q('Unlimited'))
+      expect(result.valuation?.altValue).toBe(8_000)
+      expect(result.reasons).not.toContain('identity_weak')
+    })
+
+    it('"Unlimited Edition" picks the empty-variety holder and must NEVER return 1st Edition', () => {
+      const result = matchValuation([firstEd, unlimited], q('Unlimited Edition'))
+      expect(result.valuation?.altValue).toBe(8_000)
+      expect(result.valuation?.variety).not.toBe('1st Edition')
+    })
+
+    it('"Shadowless" picks the Shadowless holder over Unlimited', () => {
+      const result = matchValuation([unlimited, shadowless], q('Shadowless'))
+      expect(result.valuation?.altValue).toBe(40_000)
+    })
+
+    it('"1st Edition Shadowless" requires BOTH tokens — not just "1st" alone, not just "Shadowless" alone', () => {
+      const result = matchValuation([firstEd, shadowless, firstEdShadowless], q('1st Edition Shadowless'))
+      expect(result.valuation?.altValue).toBe(30_000)
+    })
+  })
 })
 
 describe('matchValuation', () => {
