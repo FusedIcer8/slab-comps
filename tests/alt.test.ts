@@ -226,6 +226,69 @@ describe('pickValuation', () => {
       expect(pickValuation([firstEd, unlimited], q)?.altValue).toBe(8000)
     })
   })
+
+  describe('N4: variant normalization, brand/name fallback, and identity_weak when nothing matches', () => {
+    const firstEd = mk('4', 20000, { brand: 'Base Set', variety: '1st Edition' })
+    const unlimited = mk('4', 8000, { brand: 'Base Set', variety: 'Unlimited' })
+    const q = (variant: string): SlabQuery => ({
+      game: 'pokemon',
+      cardName: 'Charizard',
+      cardNumber: '4/102',
+      grader: 'PSA',
+      grade: '9',
+      variant,
+    })
+
+    it('"1st Ed" normalizes to match a "1st Edition" holder', () => {
+      const result = matchValuation([unlimited, firstEd], q('1st Ed'))
+      expect(result.valuation?.altValue).toBe(20000)
+      expect(result.reasons).not.toContain('identity_weak')
+    })
+
+    it('"First Edition" normalizes to match a "1st Edition" holder', () => {
+      const result = matchValuation([unlimited, firstEd], q('First Edition'))
+      expect(result.valuation?.altValue).toBe(20000)
+    })
+
+    it('"1st Edition Shadowless" matches a holder whose variety states both', () => {
+      const shadowless1st = mk('4', 30000, { brand: 'Base Set', variety: '1st Edition Shadowless' })
+      const result = matchValuation([unlimited, shadowless1st], q('1st Edition Shadowless'))
+      expect(result.valuation?.altValue).toBe(30000)
+      expect(result.reasons).not.toContain('identity_weak')
+    })
+
+    it('matches an edition present only in `brand` text with an empty `variety` field', () => {
+      // Both candidates have an EMPTY variety field (so the old code can't
+      // lean on "null variety never gets penalized" to accidentally pick
+      // the right one) — only one's `brand` text actually says "Shadowless".
+      const noEditionInfo = mk('4', 5000, { brand: 'Base Set', variety: null })
+      const shadowlessInBrand = mk('4', 18000, { brand: '1999 Base Set Shadowless', variety: null })
+      const result = matchValuation([noEditionInfo, shadowlessInBrand], q('Shadowless'))
+      expect(result.valuation?.altValue).toBe(18000)
+      expect(result.reasons).not.toContain('identity_weak')
+    })
+
+    it('emits identity_weak (and does not silently resolve) when the variant matches nothing', () => {
+      // A single candidate (no tie possible) so this isolates the
+      // variant-specific identity_weak check from the separate tie-based
+      // one (see C1) — this must fire even with a unique number match.
+      const result = matchValuation([unlimited], q('Reverse Holo Staff'))
+      expect(result.valuation).not.toBeNull()
+      expect(result.lowConfidence).toBe(true)
+      expect(result.reasons).toContain('identity_weak')
+    })
+
+    it('the edition-marker penalty does not apply to an edition the caller actually asked for', () => {
+      // Without the exemption, "1st" riding along in "1st Edition"'s own
+      // brand text would get penalized by EDITION_MARKER_TOKENS even
+      // though the caller explicitly asked for that edition.
+      const firstEdBrand = mk('4', 20000, { brand: 'Base Set 1st Edition', variety: '1st Edition' })
+      const plainBase = mk('4', 8000, { brand: 'Base Set', variety: 'Unlimited' })
+      const qq: SlabQuery = { ...q('1st Edition'), setName: 'Base Set' }
+      const result = matchValuation([plainBase, firstEdBrand], qq)
+      expect(result.valuation?.altValue).toBe(20000)
+    })
+  })
 })
 
 describe('matchValuation', () => {
@@ -399,6 +462,21 @@ describe('matchValuation', () => {
       const differentSet = mk('4', 5, { brand: 'Pokemon Base Set 2' })
       const result = matchValuation([differentSet, correct], q)
       expect(result.valuation?.brand).toBe('Base Set')
+    })
+
+    it('N6: the "2" edition-marker penalty does not apply when the QUERY set name itself says "2"', () => {
+      const q: SlabQuery = {
+        game: 'pokemon',
+        cardName: 'Charizard',
+        cardNumber: '4',
+        setName: 'Base Set 2',
+        grader: 'PSA',
+        grade: '9',
+      }
+      const baseSet2 = mk('4', 300, { brand: 'Pokemon Base Set 2' })
+      const plainBaseSet = mk('4', 15_000, { brand: 'Base Set' })
+      const result = matchValuation([plainBaseSet, baseSet2], q)
+      expect(result.valuation?.brand).toBe('Pokemon Base Set 2')
     })
 
     it('recognizes alt\'s real brand text for original Base Set — "Pokemon Game" (verified live 2026-09-20)', () => {

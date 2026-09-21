@@ -11,6 +11,37 @@ function normalizeTokens(s) {
         .split(' ')
         .filter(Boolean);
 }
+/** Normalize a variety/variant phrase for token comparison: lowercase,
+ *  strip punctuation, AND fold common abbreviations to a canonical form
+ *  ("1st Ed" / "First Edition" / "1st Edition" all become the same
+ *  tokens) so a caller's shorthand still matches alt's fuller wording. */
+function normalizeVarietyText(s) {
+    return normalizeTokens(s).map(t => {
+        if (t === 'first')
+            return '1st';
+        if (t === 'ed')
+            return 'edition';
+        return t;
+    });
+}
+/** Every place a candidate's edition/variety information might actually
+ *  live — alt's structured `variety` field, but also its `brand`/`name`
+ *  text, which sometimes carries the edition (e.g. "1999 Base Set
+ *  Shadowless") when `variety` itself is empty. */
+function varietyHaystack(v) {
+    return normalizeVarietyText(`${v.variety ?? ''} ${v.brand ?? ''} ${v.name ?? ''}`);
+}
+/** True if ANY of the query's (normalized) variant tokens appears
+ *  anywhere in the candidate's variety haystack — a loose "any token"
+ *  match rather than requiring the whole phrase, so a caller's partial
+ *  wording ("Shadowless" alone) still matches a fuller variety string
+ *  ("1st Edition Shadowless"). */
+function variantMatches(v, wantTokens) {
+    if (wantTokens.length === 0)
+        return false;
+    const haystack = varietyHaystack(v);
+    return wantTokens.some(t => haystack.includes(t));
+}
 /** Tokens that mark a DIFFERENT edition/printing than what the token they
  *  ride along with implies — "Base Set" and "Base Set 2" share both of the
  *  query's tokens, but "2" names a real, different, later expansion. Also
@@ -52,8 +83,14 @@ const REPRINT_CONTRADICTION_PENALTY = 6;
  *  overlap must not score identically against a same-named-but-different
  *  product ("Base Set" vs "Base Set 2"). Also rejects (heavily penalizes)
  *  a known reprint-family mismatch even when token overlap alone would
- *  tie — see REPRINT_FAMILIES. */
-function setOverlapScore(want, candidate) {
+ *  tie — see REPRINT_FAMILIES.
+ *
+ *  `exemptTokens` additionally excludes tokens the caller's own `variant`
+ *  asked for (N6/N4) — a query for setName:"Base Set" + variant:"1st
+ *  Edition" must not penalize a candidate whose brand text says "Base Set
+ *  1st Edition" just because "1st" wasn't part of the SET name; the
+ *  caller explicitly asked for that edition via `variant`. */
+function setOverlapScore(want, candidate, exemptTokens = new Set()) {
     if (!want || !candidate)
         return 0;
     const aliasedWant = applySetAliases(want);
@@ -65,7 +102,7 @@ function setOverlapScore(want, candidate) {
     const candSet = new Set(candTokens);
     const hits = wantTokens.filter(t => candSet.has(t)).length;
     const overlap = hits / wantTokens.length;
-    const extraEditionTokens = candTokens.filter(t => EDITION_MARKER_TOKENS.has(t) && !wantSet.has(t));
+    const extraEditionTokens = candTokens.filter(t => EDITION_MARKER_TOKENS.has(t) && !wantSet.has(t) && !exemptTokens.has(t));
     let score = overlap - extraEditionTokens.length * EDITION_TOKEN_PENALTY;
     for (const fam of REPRINT_FAMILIES) {
         const wantsOriginal = fam.original.test(aliasedWant) && !fam.reprint.test(want);
@@ -108,13 +145,17 @@ function varietyTier(v) {
     const norm = (v.variety ?? '').trim().toLowerCase();
     return norm === '' || norm === 'unlimited' ? 0 : 1;
 }
-function scoreCandidate(v, slab, anyExactYear, wantLang) {
+function scoreCandidate(v, slab, anyExactYear, wantLang, variantWantTokens) {
     let score = 0;
     // Set name: token overlap (minus edition-marker penalty), weighted
     // heavily — this is the primary reprint-collision discriminator
     // alongside year, and must outweigh language (see language, below).
+    // The variant's own tokens are exempt from the edition-marker penalty
+    // (N4/N6) — asking for variant:"1st Edition" must not penalize a
+    // candidate whose brand text says "...1st Edition" just because "1st"
+    // isn't part of the SET name.
     const SET_WEIGHT = 4;
-    score += setOverlapScore(slab.setName, v.brand) * SET_WEIGHT;
+    score += setOverlapScore(slab.setName, v.brand, new Set(variantWantTokens)) * SET_WEIGHT;
     // Year: exact match is strong; a contradicting year is a strong
     // negative (this is what keeps Base Set '99 and Celebrations '21 apart).
     // ±1 tolerance only applies when no candidate in the pool matches
@@ -138,11 +179,10 @@ function scoreCandidate(v, slab, anyExactYear, wantLang) {
     // Variety: 1st Edition vs Unlimited, Shadowless, Holo/Reverse — only
     // scored when the query actually specifies one; otherwise varieties are
     // resolved by the deterministic tiebreak in matchValuation, never here.
-    if (slab.variant) {
-        const wantTokens = normalizeTokens(slab.variant);
-        const candTokens = v.variety ? normalizeTokens(v.variety) : [];
-        const overlap = wantTokens.length > 0 && wantTokens.every(t => candTokens.includes(t));
-        if (overlap)
+    // Matches on ANY token (not every) against variety+brand+name (not just
+    // variety) — see variantMatches/varietyHaystack (N4).
+    if (variantWantTokens.length > 0) {
+        if (variantMatches(v, variantWantTokens))
             score += 2;
         else if (v.variety)
             score -= 1;
@@ -192,8 +232,9 @@ export function matchValuation(valuations, slab) {
     }
     const anyExactYear = slab.year != null && pool.some(v => v.year === slab.year);
     const wantLang = wantedLanguage(slab);
+    const variantWantTokens = slab.variant ? normalizeVarietyText(slab.variant) : [];
     const scored = pool
-        .map(v => ({ v, score: scoreCandidate(v, slab, anyExactYear, wantLang) }))
+        .map(v => ({ v, score: scoreCandidate(v, slab, anyExactYear, wantLang, variantWantTokens) }))
         .sort((a, b) => b.score - a.score);
     const topScore = scored[0].score;
     // Everyone within TIE_MARGIN of the top score — real identity signals
@@ -219,12 +260,20 @@ export function matchValuation(valuations, slab) {
     // e.g. it's the only number match, but it contradicts every other
     // discriminator the query actually supplied (wrong set AND wrong year).
     const givenChecks = [];
-    if (slab.setName)
-        givenChecks.push(setOverlapScore(slab.setName, best.brand) <= 0);
+    if (slab.setName) {
+        givenChecks.push(setOverlapScore(slab.setName, best.brand, new Set(variantWantTokens)) <= 0);
+    }
     if (slab.year != null)
         givenChecks.push(best.year !== slab.year);
     if (givenChecks.length > 0 && givenChecks.every(Boolean))
         reasons.push('identity_weak');
+    // A variant was given but NO candidate in the whole pool actually
+    // matched it — silently resolving to whatever the tiebreak lands on
+    // (typically the cheapest/Unlimited print) would hide that the
+    // requested edition simply isn't in alt's data for this card (N4).
+    if (variantWantTokens.length > 0 && !pool.some(v => variantMatches(v, variantWantTokens))) {
+        reasons.push('identity_weak');
+    }
     if (best.confidence != null && best.confidence < ALT_CONFIDENCE_LOW_THRESHOLD) {
         reasons.push('alt_low_confidence');
     }
