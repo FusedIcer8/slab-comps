@@ -280,4 +280,125 @@ describe('matchValuation', () => {
     expect(result.valuation).toBeNull()
     expect(result.lowConfidence).toBe(false)
   })
+
+  describe('C1: ties among NUMBER-matched candidates (the live path — app never passes variant/year)', () => {
+    const q: SlabQuery = { game: 'pokemon', cardName: 'Charizard', cardNumber: '4', grader: 'PSA', grade: '9' }
+    // Real-world shape: 1st Edition / Shadowless / Unlimited Base Set
+    // Charizard, all #4, no query discriminator tells them apart.
+    const firstEd = mk('4', 250_000, { brand: 'Base Set', variety: '1st Edition', confidence: 90 })
+    const shadowless = mk('4', 40_000, { brand: 'Base Set', variety: 'Shadowless', confidence: 60 })
+    const unlimited = mk('4', 12_000, { brand: 'Base Set', variety: 'Unlimited', confidence: 40 })
+
+    it('flags identity_weak even though a card number WAS given (gate dropped)', () => {
+      const result = matchValuation([firstEd, shadowless, unlimited], q)
+      expect(result.lowConfidence).toBe(true)
+      expect(result.reasons).toContain('identity_weak')
+    })
+
+    it('flags variety_ambiguous when tied candidates differ in variety and value spreads > 1.5x', () => {
+      const result = matchValuation([firstEd, shadowless, unlimited], q)
+      expect(result.reasons).toContain('variety_ambiguous')
+    })
+
+    it('never picks the highest-value tied candidate — prefers the empty/Unlimited variety', () => {
+      const result = matchValuation([firstEd, shadowless, unlimited], q)
+      expect(result.valuation?.variety).toBe('Unlimited')
+      expect(result.valuation?.altValue).toBe(12_000)
+    })
+
+    it('ignores confidence as a tiebreak (the priciest variety having the highest confidence must not win)', () => {
+      // firstEd has the highest confidence (90) of the three — under the old
+      // `confidence/1000` nudge this decided the tie and picked firstEd.
+      const result = matchValuation([firstEd, shadowless, unlimited], q)
+      expect(result.valuation?.variety).not.toBe('1st Edition')
+    })
+
+    it('falls back to the LOWEST value when no tied candidate has an empty/Unlimited variety', () => {
+      const result = matchValuation([firstEd, shadowless], q)
+      expect(result.valuation?.variety).toBe('Shadowless')
+      expect(result.valuation?.altValue).toBe(40_000)
+    })
+
+    it('is deterministic across input order', () => {
+      const a = matchValuation([firstEd, shadowless, unlimited], q)
+      const b = matchValuation([unlimited, firstEd, shadowless], q)
+      const c = matchValuation([shadowless, unlimited, firstEd], q)
+      expect(a.valuation?.altValue).toBe(b.valuation?.altValue)
+      expect(b.valuation?.altValue).toBe(c.valuation?.altValue)
+    })
+  })
+
+  describe('I5: language is a tiebreak, never enough to beat a genuine set match', () => {
+    it('a correct-set Japanese candidate beats a wrong-set English candidate', () => {
+      // game:'pokemon' (not 'pokemon-japan') and no explicit language, so the
+      // default wanted language is English — but the query's own setName is
+      // Japan-exclusive. Under the old ±3 (swing 6) language weight this
+      // picked the wrong-set English card; set overlap (weight 4) must win.
+      const q: SlabQuery = {
+        game: 'pokemon',
+        cardName: 'Charizard',
+        cardNumber: '8',
+        setName: 'Japanese VMAX Climax',
+        grader: 'PSA',
+        grade: '10',
+      }
+      const correctSetJp = mk('8', 3000, { brand: 'Japanese VMAX Climax' })
+      const wrongSetEn = mk('8', 50, { brand: 'Sword and Shield Base Set' })
+      const result = matchValuation([wrongSetEn, correctSetJp], q)
+      expect(result.valuation?.brand).toBe('Japanese VMAX Climax')
+    })
+
+    it('flags identity_weak when the lone surviving candidate matches neither the given set nor year', () => {
+      const q: SlabQuery = {
+        game: 'pokemon',
+        cardName: 'Charizard',
+        cardNumber: '4',
+        setName: 'Celebrations',
+        year: 2021,
+        grader: 'PSA',
+        grade: '9',
+      }
+      // Only one candidate carries #4 — alt data quality issue, or a genuine
+      // miss — but it's neither the given set nor the given year.
+      const wrong = mk('4', 15_000, { brand: 'Base Set', year: 1999 })
+      const result = matchValuation([wrong], q)
+      expect(result.valuation).not.toBeNull()
+      expect(result.lowConfidence).toBe(true)
+      expect(result.reasons).toContain('identity_weak')
+    })
+
+    it('widened language regex recognizes "JP"/"JPN" alongside "Japan(ese)"', () => {
+      const q: SlabQuery = {
+        game: 'pokemon',
+        cardName: 'Charizard',
+        cardNumber: '8',
+        language: 'japanese',
+        grader: 'PSA',
+        grade: '10',
+      }
+      const jpAbbrev = mk('8', 3000, { brand: 'JP World Champions Pack' })
+      const jpnAbbrev = mk('8', 10, { brand: 'Something Unrelated', name: null })
+      const result = matchValuation([jpnAbbrev, jpAbbrev], q)
+      expect(result.valuation?.brand).toBe('JP World Champions Pack')
+    })
+  })
+
+  describe('I7: set-overlap penalizes a different-edition candidate, no false full-score tie', () => {
+    it('"Base Set" scores higher against "Base Set" than against "Base Set 2" (extra edition token "2")', () => {
+      const q: SlabQuery = {
+        game: 'pokemon',
+        cardName: 'Charizard',
+        cardNumber: '4',
+        setName: 'Base Set',
+        grader: 'PSA',
+        grade: '9',
+      }
+      const correct = mk('4', 15_000, { brand: 'Base Set' })
+      // "Base Set 2" is a real, different, much later expansion — same two
+      // query tokens ("base","set") both present, but it's not a match.
+      const differentSet = mk('4', 5, { brand: 'Pokemon Base Set 2' })
+      const result = matchValuation([differentSet, correct], q)
+      expect(result.valuation?.brand).toBe('Base Set')
+    })
+  })
 })
