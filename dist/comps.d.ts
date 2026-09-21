@@ -2,41 +2,51 @@ import type { AltValuation, CardPop, CompSummary, GetSlabCompsOptions, SlabComps
 export interface AltLeg {
     valuation: AltValuation;
     pops: CardPop[];
-    /** Population count backing this valuation — see computeAltSampleSize.
-     *  `undefined` (never 0!) when the population fetch failed; see
-     *  popsUnavailable. A confirmed 0 (alt reported the bucket, it's
+    /** Population count for the queried grader+grade specifically — see
+     *  computeAltSampleSize. `undefined` (never 0, never an all-grades
+     *  sum!) whenever it isn't known: the fetch failed, OR alt simply
+     *  doesn't report that specific bucket (see popsUnavailable/
+     *  popsFetchFailed). A confirmed 0 (alt reported the bucket, it's
      *  genuinely empty) is a real, meaningful number and stays 0. */
     sampleSize: number | undefined;
     /** True when the population-count fetch itself failed (network/API
-     *  error) — distinct from alt genuinely reporting zero population.
-     *  When true, `pops` is `[]` as a safe placeholder, not a confirmed
-     *  empty result, and `sampleSize` is `undefined`. */
+     *  error). Pushed into the top-level errors[] — a consumer must not
+     *  cache this as if nothing went wrong. Distinct from popsUnavailable:
+     *  a successful fetch that simply doesn't have the queried bucket is
+     *  NOT a failure and does not get pushed to errors[]. */
+    popsFetchFailed: boolean;
+    /** True whenever sampleSize is unavailable for ANY reason — a fetch
+     *  failure (popsFetchFailed) OR alt's fetch succeeding but simply not
+     *  reporting the queried grader+grade bucket. Surfaces the
+     *  'pops_unavailable' reason either way; see popsFetchFailed for what
+     *  additionally reaches errors[]. */
     popsUnavailable: boolean;
     lowConfidence: boolean;
     reasons: string[];
 }
 /** alt doesn't report a comp count the way 130point does (it's a model
- *  estimate, not a median of sales) — population count is the closest
- *  available proxy for "how much data backs this number". Prefer the
- *  bucket for the SPECIFIC queried grader+grade (a card can have pop
- *  50,000 at PSA 9 and pop 3 at PSA 10 — summing across every grade, as
- *  this used to do, made the "thin sample" check nearly meaningless,
- *  since the all-grades total is almost never small). Falls back to the
- *  summed population across all reported grades only when alt doesn't
- *  report the specific bucket, as a coarser proxy. */
-export declare function computeAltSampleSize(pops: CardPop[], slab: SlabQuery): number;
+ *  estimate, not a median of sales) — population count for the SPECIFIC
+ *  queried grader+grade is the closest available proxy for "how much
+ *  data backs this number". Returns undefined (not a sum, not 0) when
+ *  alt doesn't report that specific bucket: a card can have pop 50,000
+ *  at PSA 9 and pop 3 at PSA 10, so summing across every grade (this
+ *  library's own earlier behavior) made the "thin sample" check nearly
+ *  meaningless, since the all-grades total is almost never small — and
+ *  per the controller ruling (N5), a missing bucket must read as UNKNOWN,
+ *  not as some other number entirely. */
+export declare function computeAltSampleSize(pops: CardPop[], slab: SlabQuery): number | undefined;
 /**
  * Decide the recommended number and the cross-source confidence signal.
  * Pure and fixture-testable — no network. Split out of getSlabComps so
  * the disagreement/thin-sample/identity-weak logic can be unit tested
  * directly against constructed alt/130point legs.
  *
- * Default source preference stays alt-first (unchanged from before this
- * fix) UNLESS alt's sample is thin and 130point's is not, per the audit:
- * "do not change which number is recommended unless the preferred source
- * is n<min and the other is n>=min with agreement otherwise impossible."
- * An UNKNOWN alt sample (popsUnavailable) is never treated as thin for
- * this purpose — a fetch failure must never silently flip the source.
+ * CONTROLLER RULING (N5): population is not a sales sample. Source
+ * preference is alt-first, always, whenever alt has a valuation — a thin
+ * (or entirely unknown) alt population NEVER switches the recommended
+ * source to 130point; it only adds the 'thin_sample' (or
+ * 'pops_unavailable') reason. An earlier version of this function did
+ * switch sources on a thin alt population — that behavior is retracted.
  */
 export declare function buildRecommendation(alt: AltLeg | null, point130: CompSummary | null, options?: GetSlabCompsOptions): Pick<SlabCompsResult, 'recommended' | 'lowConfidence' | 'reasons'>;
 /**

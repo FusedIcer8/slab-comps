@@ -1,15 +1,79 @@
 # Changelog
 
-## 0.3.0 — 2026-09-20 (fix wave, fable review FIX-THEN-MERGE)
+## 0.3.0 — 2026-09-20 (fix wave 1 + fix wave 2, fable review FIX-THEN-MERGE ×2)
 
-A second pass fixing defects found reviewing 0.2.0 before it shipped —
-several of the 0.2.0 fixes above had live-path gaps. Same branch
-(`fix/identity-matching`). All changes remain additive; every field
-added since 0.1.0 is now typed **optional** for backward/cache
+Two further review passes fixing defects found reviewing the fixes
+below before they shipped — several opened new gaps of their own,
+caught by re-review rather than by any external report. Same branch
+(`fix/identity-matching`), never released/pushed, so this stays 0.3.0
+rather than bumping again. All changes remain additive; every field
+added since 0.1.0 is typed **optional** for backward/cache
 compatibility (see README § Backward compatibility) even though this
 library's own producer code always sets them.
 
-### Fixed
+### Fixed (review pass 2 — the pass-1 130point/alt fixes opened wrong-card paths)
+
+- **N1, Critical, pushed reprint offers UP** (`src/point130/comps.ts`):
+  pass 1's set-name AND-narrowing let a matching denominator satisfy a
+  REPRINT-family query (e.g. "Celebrations: Classic Collection") on its
+  own, with no reprint marker required — so plain ORIGINAL-print titles
+  ("1999 Pokemon Charizard Holo 4/102 PSA 10", "Charizard 4/102
+  Shadowless PSA 10") got accepted into a reprint quote's comp set,
+  pulling its median up toward the original's far higher value. Also
+  let unrelated real cards sharing a denominator through ("Umbreon Gold
+  Star 17/17 POP Series 5", "Dark Gyarados 8/82 Team Rocket 1st
+  Edition"). Fixed: when the query's setName matches a known reprint
+  family's REPRINT side, the title must carry the marker itself —
+  denominator never rescues it. The original-side symmetric check is
+  unchanged.
+- **N2** (`src/point130/comps.ts`): with no card number at all, ANY ONE
+  distinctive set-name token accepted a row — "promo" alone let 29
+  unrelated promos through for "SWSH: Sword & Shield Promo Cards" (true
+  median ~$78 vs a wrongly-inflated $227); "fates" alone let a "Shining
+  Fates" title through for a "Hidden Fates" query; "base" alone let
+  plain "Base Set" through for a "Base Set 2" query. Fixed: a new
+  GENERIC_SET_TOKENS list (promo, collection, fates, base, vault, star,
+  ...) plus `nonGenericSetTokens` — with no number, EVERY non-generic
+  token is required; the same exclusion tightens the weaker "at least
+  one" rescue used when a number was given but didn't independently
+  confirm the set. Also fixed in the same pass: `nameWords` dropped
+  1-character words, so "Charizard V" silently matched any "Charizard"
+  including "Charizard VMAX" (V is a substring of VMAX). Short alnum
+  name words are now kept and word-boundary matched instead.
+- **N3** (`src/point130/comps.ts`): letter-prefixed numbers (SWSH050,
+  TG15, GG70, SV107, SM210, XY17, H4) identify their set on their own,
+  but only numerator/denominator numbers satisfied the set requirement.
+  A literal match on the prefixed number (via its numerator, so
+  "SV107/SV122"-range forms work too) now satisfies the set directly.
+- **N4** (`src/alt/match.ts`): a `variant` that matched nothing silently
+  resolved to whichever candidate the tiebreak landed on, with an empty
+  `reasons[]` — no signal the requested edition wasn't actually found.
+  Matching also only checked the exact `variety` field requiring every
+  token, so shorthand ("1st Ed") never matched "1st Edition" and an
+  edition mentioned only in `brand`/`name` text was invisible. Fixed:
+  `normalizeVarietyText` folds "first"->"1st"/"ed"->"edition";
+  `variantMatches` searches variety+brand+name on an any-token basis;
+  `identity_weak` fires when a variant was given and nothing in the pool
+  matched it. The edition-marker penalty also now exempts the caller's
+  own variant tokens.
+- **N6**: verified the edition-marker "2" penalty already correctly
+  exempts a query whose own setName contains "2" (e.g. "Base Set 2") via
+  the pre-existing token exemption — added a regression test, no code
+  change was needed.
+- **N5, CONTROLLER RULING** (`src/comps.ts`): population is not a sales
+  sample. The alt-thin -> switch-to-130point behavior from pass 1 is
+  **removed** — source preference is alt-first, always, whenever alt has
+  a valuation; a thin (or entirely unknown) alt population only ever
+  adds the `'thin_sample'`/`'pops_unavailable'` reason, never changes
+  the source. `computeAltSampleSize` no longer falls back to an
+  all-grades sum when the queried grader+grade bucket is missing — it
+  returns `undefined` (unknown), matching the same semantics as a
+  fetch failure. A new `popsFetchFailed` field distinguishes a genuine
+  fetch failure (pushed into `errors[]`) from a merely-missing bucket
+  (not an error, not pushed) — both still surface `'pops_unavailable'`
+  in `reasons`.
+
+### Fixed (review pass 1)
 
 - **alt: ties among number-matched candidates were unflagged**
   (`src/alt/match.ts`): `identity_weak` only fired when no card number
@@ -117,6 +181,7 @@ where to add further verified ones.
 
 - `CompSummary.yearUnconfirmed?: boolean`
 - `SlabCompsResult.alt.popsUnavailable?: boolean`
+- `SlabCompsResult.alt.popsFetchFailed?: boolean` (review pass 2 — see N5)
 - `SlabCompsResult.recommended.sampleKind?: 'population' | 'comps'`
 - New reasons: `'variety_ambiguous'`, `'pops_unavailable'`, `'year_unconfirmed'`
 - New exports: `computeAltSampleSize`, `yearIsConfirmed`
@@ -124,6 +189,13 @@ where to add further verified ones.
   `CompSummary.excludedNonUsd`, `SlabCompsResult.lowConfidence/reasons`,
   `SlabCompsResult.alt.lowConfidence/reasons`,
   `recommended.sampleSize`) is now typed optional (was required)
+
+### Changed (review pass 2 — pre-release, no consumer ever saw pass 1's shape)
+
+- `computeAltSampleSize(pops, slab)` now returns `number | undefined`
+  (was `number`, with an all-grades-sum fallback that N5 retracted) —
+  `undefined` when the queried grader+grade bucket isn't reported, never
+  a sum across other grades.
 
 ## 0.2.0 — 2026-09-20
 

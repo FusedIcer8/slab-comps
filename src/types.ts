@@ -109,29 +109,39 @@ export interface SlabCompsResult {
     valuation: AltValuation
     pops: CardPop[]
     /** True when the identity match backing this valuation was ambiguous,
-     *  alt's own confidence metric was low, or the population fetch
-     *  failed (see reasons). Optional/producer-set — always present from
-     *  this library's own getSlabComps; absent only on pre-0.2.0 cached
-     *  data. */
+     *  alt's own confidence metric was low, or the population is
+     *  unavailable (see reasons). Optional/producer-set — always present
+     *  from this library's own getSlabComps; absent only on pre-0.2.0
+     *  cached data. */
     lowConfidence?: boolean
     reasons?: string[]
-    /** True when the population-count fetch for this valuation's asset
-     *  failed (network/API error, not "zero population"). When true,
-     *  `pops` is `[]` as a safe placeholder — NOT a confirmed zero — and
-     *  `sampleSize`/thin-sample logic must not treat it as a known small
-     *  number. See 'pops_unavailable' in reasons and the top-level
-     *  `errors` array. */
+    /** True whenever the population count for the queried grader+grade is
+     *  unavailable for ANY reason — a fetch failure OR alt simply not
+     *  reporting that specific bucket. `sampleSize` is `undefined` (never
+     *  0, never an all-grades sum) in both cases. See `popsFetchFailed`
+     *  for which of the two it was, and 'pops_unavailable' in `reasons`. */
     popsUnavailable?: boolean
+    /** True specifically when the population-count fetch for this
+     *  valuation's asset FAILED (network/API error) — distinct from a
+     *  successful fetch that simply doesn't report the queried
+     *  grader+grade bucket (popsUnavailable covers both, this covers only
+     *  the failure). A fetch failure is also pushed into the top-level
+     *  `errors` array so a caching consumer doesn't cache it as if
+     *  nothing went wrong; a merely-missing bucket is not an error. */
+    popsFetchFailed?: boolean
   } | null
   point130: CompSummary | null
-  /** Best available single number: alt.altValue, else 130point median. */
+  /** Best available single number: alt.altValue, else 130point median.
+   *  CONTROLLER RULING: population is not a sales sample — a thin or
+   *  unknown alt population NEVER changes which source is recommended
+   *  (alt-first whenever alt has a valuation); it only ever adds a
+   *  'thin_sample'/'pops_unavailable' reason. */
   recommended: {
     value: number
     source: 'alt' | '130point'
-    /** Units depend on `sampleKind`: population count (alt — total across
-     *  grades, or a specific grader+grade bucket when alt reports one) or
-     *  sold-comp count (130point). NEVER compare the two numbers as if
-     *  they were the same unit. Optional/producer-set. */
+    /** Units depend on `sampleKind`: population count for the queried
+     *  grader+grade (alt) or sold-comp count (130point). NEVER compare
+     *  the two numbers as if they were the same unit. Optional/producer-set. */
     sampleSize?: number
     /** What `sampleSize` counts: alt.xyz population data ('population')
      *  or literal sold 130point comps ('comps'). */

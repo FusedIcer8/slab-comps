@@ -85,8 +85,8 @@ vs the 2021 Celebrations Classic Collection reprint of the same number.
 
 `SlabCompsResult.recommended` now carries a `sampleSize` + `sampleKind`
 (`'population'` for alt — the population count for the queried
-grader+grade specifically, falling back to the summed population across
-all grades only when alt doesn't report that bucket — or `'comps'` for
+grader+grade specifically, `undefined` when alt doesn't report that
+exact bucket (never an all-grades sum, never 0) — or `'comps'` for
 130point's literal sold-comp count; never compare the two numbers as if
 they were the same unit), and the top-level result carries
 `lowConfidence: boolean` + `reasons: string[]`:
@@ -97,16 +97,21 @@ they were the same unit), and the top-level result carries
   favor of the default)
 - `'thin_sample'` — the recommended source's sample size is below
   `minSample` (default 3; configurable via `{ minSample }`, values <1
-  are ignored). Source preference stays alt-first by default, except
-  when alt is thin and 130point is not, in which case 130point is
-  preferred. An UNKNOWN alt sample (see `pops_unavailable`) is never
-  treated as thin and never triggers this source switch.
-- `'pops_unavailable'` — alt's population-count fetch failed (a network
-  error, not "alt reported zero population"). `alt.sampleSize` is then
-  `undefined`, not `0` — a fetch failure must never be silently treated
-  as a confirmed thin (or zero) sample. Also pushed into the top-level
-  `errors[]` array so a caching consumer doesn't cache the result as if
-  nothing went wrong.
+  are ignored). **Source preference is alt-first, always** — a
+  CONTROLLER RULING: population is not a sales sample, so a thin (or
+  entirely unknown) alt population never changes which source is
+  recommended; it only ever adds this reason (or `pops_unavailable`).
+  An earlier version of this library did switch to 130point when alt
+  was thin — that behavior has been removed.
+- `'pops_unavailable'` — the population count for the queried
+  grader+grade is unavailable, either because the fetch itself failed
+  (a network error — also pushed into the top-level `errors[]` array so
+  a caching consumer doesn't cache the result as if nothing went wrong;
+  see `alt.popsFetchFailed`) or because alt's fetch succeeded but simply
+  doesn't report that specific bucket (not an error — not pushed to
+  `errors[]`). Either way `alt.sampleSize` is `undefined`, never `0` and
+  never a same-source sum across other grades — a missing/failed count
+  must never be silently treated as a confirmed thin (or zero) sample.
 - `'year_unconfirmed'` — a year was given but no surviving 130point comp
   positively states it (passing the year filter only means nothing
   *contradicted* it, which is weaker than confirming it).
@@ -124,8 +129,9 @@ counted there instead. Currency comparison is uppercase+trim-tolerant.
 Every field added since 0.1.0 (`SlabQuery.year/language/variant`,
 `AltValuation.year/variety/name`, `CompSummary.excludedNonUsd/
 yearUnconfirmed`, `SlabCompsResult.lowConfidence/reasons`,
-`SlabCompsResult.alt.lowConfidence/reasons/popsUnavailable`,
-`recommended.sampleSize/sampleKind`) is typed **optional**, even though
+`SlabCompsResult.alt.lowConfidence/reasons/popsUnavailable/
+popsFetchFailed`, `recommended.sampleSize/sampleKind`) is typed
+**optional**, even though
 this library's own `getSlabComps` always sets them. This is deliberate:
 a consumer that constructs these types directly (tests, mocks) or reads
 rows cached from an older version of this library shouldn't be forced

@@ -4,20 +4,19 @@ import { matchValuation } from './alt/match.js';
 const DEFAULT_DISAGREEMENT_RATIO = 3;
 const DEFAULT_MIN_SAMPLE = 3;
 /** alt doesn't report a comp count the way 130point does (it's a model
- *  estimate, not a median of sales) — population count is the closest
- *  available proxy for "how much data backs this number". Prefer the
- *  bucket for the SPECIFIC queried grader+grade (a card can have pop
- *  50,000 at PSA 9 and pop 3 at PSA 10 — summing across every grade, as
- *  this used to do, made the "thin sample" check nearly meaningless,
- *  since the all-grades total is almost never small). Falls back to the
- *  summed population across all reported grades only when alt doesn't
- *  report the specific bucket, as a coarser proxy. */
+ *  estimate, not a median of sales) — population count for the SPECIFIC
+ *  queried grader+grade is the closest available proxy for "how much
+ *  data backs this number". Returns undefined (not a sum, not 0) when
+ *  alt doesn't report that specific bucket: a card can have pop 50,000
+ *  at PSA 9 and pop 3 at PSA 10, so summing across every grade (this
+ *  library's own earlier behavior) made the "thin sample" check nearly
+ *  meaningless, since the all-grades total is almost never small — and
+ *  per the controller ruling (N5), a missing bucket must read as UNKNOWN,
+ *  not as some other number entirely. */
 export function computeAltSampleSize(pops, slab) {
     const wantedGrade = parseFloat(slab.grade);
     const bucket = pops.find(p => p.gradingCompany === slab.grader && parseFloat(p.gradeNumber) === wantedGrade);
-    if (bucket)
-        return bucket.count;
-    return pops.reduce((sum, p) => sum + p.count, 0);
+    return bucket?.count;
 }
 /**
  * Decide the recommended number and the cross-source confidence signal.
@@ -25,12 +24,12 @@ export function computeAltSampleSize(pops, slab) {
  * the disagreement/thin-sample/identity-weak logic can be unit tested
  * directly against constructed alt/130point legs.
  *
- * Default source preference stays alt-first (unchanged from before this
- * fix) UNLESS alt's sample is thin and 130point's is not, per the audit:
- * "do not change which number is recommended unless the preferred source
- * is n<min and the other is n>=min with agreement otherwise impossible."
- * An UNKNOWN alt sample (popsUnavailable) is never treated as thin for
- * this purpose — a fetch failure must never silently flip the source.
+ * CONTROLLER RULING (N5): population is not a sales sample. Source
+ * preference is alt-first, always, whenever alt has a valuation — a thin
+ * (or entirely unknown) alt population NEVER switches the recommended
+ * source to 130point; it only adds the 'thin_sample' (or
+ * 'pops_unavailable') reason. An earlier version of this function did
+ * switch sources on a thin alt population — that behavior is retracted.
  */
 export function buildRecommendation(alt, point130, options = {}) {
     // Out-of-range options are ignored in favor of the default, rather than
@@ -39,14 +38,8 @@ export function buildRecommendation(alt, point130, options = {}) {
         ? options.disagreementRatio
         : DEFAULT_DISAGREEMENT_RATIO;
     const minSample = options.minSample != null && options.minSample >= 1 ? options.minSample : DEFAULT_MIN_SAMPLE;
-    const altSampleKnown = alt != null && !alt.popsUnavailable && alt.sampleSize != null;
-    const altThin = altSampleKnown ? alt.sampleSize < minSample : false;
-    const pointThin = point130 ? point130.count < minSample : true;
     let recommended = null;
-    if (alt && point130 && altThin && !pointThin) {
-        recommended = { value: point130.median, source: '130point', sampleSize: point130.count, sampleKind: 'comps' };
-    }
-    else if (alt) {
+    if (alt) {
         recommended = {
             value: alt.valuation.altValue,
             source: 'alt',
@@ -70,9 +63,9 @@ export function buildRecommendation(alt, point130, options = {}) {
     }
     if (recommended) {
         if (recommended.source === 'alt') {
-            if (altSampleKnown && alt.sampleSize < minSample)
+            if (alt.sampleSize != null && alt.sampleSize < minSample)
                 reasons.push('thin_sample');
-            // unknown (popsUnavailable) sample: never flagged thin — 'pops_unavailable' already communicates the uncertainty
+            // unavailable sample: never flagged thin — 'pops_unavailable' already communicates the uncertainty
         }
         else if (point130 && point130.count < minSample) {
             reasons.push('thin_sample');
@@ -97,20 +90,24 @@ export async function getSlabComps(slab, options = {}) {
             if (!match.valuation)
                 return null;
             let pops = [];
-            let popsUnavailable = false;
+            let popsFetchFailed = false;
             if (match.valuation.assetId) {
                 try {
                     pops = await getCardPops(match.valuation.assetId);
                 }
                 catch {
-                    popsUnavailable = true;
+                    popsFetchFailed = true;
                 }
             }
+            const sampleSize = popsFetchFailed ? undefined : computeAltSampleSize(pops, slab);
             return {
                 valuation: match.valuation,
                 pops,
-                sampleSize: popsUnavailable ? undefined : computeAltSampleSize(pops, slab),
-                popsUnavailable,
+                sampleSize,
+                popsFetchFailed,
+                // Unavailable for either reason — a failed fetch OR a successful
+                // fetch that simply doesn't have the queried grader+grade bucket.
+                popsUnavailable: popsFetchFailed || sampleSize == null,
                 lowConfidence: match.lowConfidence,
                 reasons: match.reasons,
             };
@@ -120,9 +117,11 @@ export async function getSlabComps(slab, options = {}) {
     const alt = altResult.status === 'fulfilled' ? altResult.value : null;
     if (altResult.status === 'rejected')
         errors.push(`alt: ${altResult.reason}`);
-    // A pops-fetch failure must not be cacheable as if nothing went wrong —
-    // surface it in errors[] too, alongside the 'pops_unavailable' reason.
-    if (alt?.popsUnavailable)
+    // A genuine fetch FAILURE must not be cacheable as if nothing went
+    // wrong — surface it in errors[] too, alongside the 'pops_unavailable'
+    // reason. A merely-missing bucket (fetch succeeded, alt just doesn't
+    // report that grade) is not an error — do not push it.
+    if (alt?.popsFetchFailed)
         errors.push('alt: population count fetch failed (sample size unknown)');
     const point130 = point130Result.status === 'fulfilled' ? point130Result.value : null;
     if (point130Result.status === 'rejected')

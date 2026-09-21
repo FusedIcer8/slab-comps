@@ -23,7 +23,8 @@ const mkAlt = (
   } satisfies AltValuation,
   pops: [],
   sampleSize,
-  popsUnavailable: false,
+  popsFetchFailed: false,
+  popsUnavailable: sampleSize == null,
   lowConfidence: false,
   reasons: [],
   ...overrides,
@@ -110,16 +111,35 @@ describe('buildRecommendation', () => {
       const { reasons } = buildRecommendation(null, mkPoint130(500, 5), { minSample: 6 })
       expect(reasons).toContain('thin_sample')
     })
+  })
 
-    it('switches the recommendation to 130point when alt is thin and 130point is not', () => {
+  describe('N5 (CONTROLLER RULING): population is not a sales sample — alt-first always, thin alt only flags, never switches', () => {
+    it('stays on alt even when alt is thin and 130point is healthy — flags thin_sample instead of switching', () => {
       const { recommended, reasons } = buildRecommendation(mkAlt(1000, 1), mkPoint130(1050, 20))
-      expect(recommended?.source).toBe('130point')
-      // the CHOSEN source (130point, n=20) is not thin, so no thin_sample flag
-      expect(reasons).not.toContain('thin_sample')
+      expect(recommended?.source).toBe('alt')
+      expect(recommended?.value).toBe(1000)
+      expect(reasons).toContain('thin_sample')
     })
 
-    it('keeps alt as recommended when both are thin (no reconciliation possible)', () => {
+    it('stays on alt even when alt sample is 0 (a confirmed, genuinely tiny population) and 130point has hundreds', () => {
+      const { recommended, reasons } = buildRecommendation(mkAlt(1000, 0), mkPoint130(1050, 500))
+      expect(recommended?.source).toBe('alt')
+      expect(reasons).toContain('thin_sample')
+    })
+
+    it('stays on alt when both are thin', () => {
       const { recommended } = buildRecommendation(mkAlt(1000, 1), mkPoint130(1050, 1))
+      expect(recommended?.source).toBe('alt')
+    })
+
+    it('never flags thin_sample for an alt sample that is merely UNKNOWN (no bucket, not a fetch failure)', () => {
+      const { reasons } = buildRecommendation(mkAlt(1000, undefined), mkPoint130(1050, 20))
+      expect(reasons).not.toContain('thin_sample')
+      expect(reasons).toContain('pops_unavailable')
+    })
+
+    it('never switches to 130point for an unknown alt sample either', () => {
+      const { recommended } = buildRecommendation(mkAlt(1000, undefined), mkPoint130(1050, 20))
       expect(recommended?.source).toBe('alt')
     })
   })
@@ -157,30 +177,25 @@ describe('buildRecommendation', () => {
     })
   })
 
-  describe('I4: pops-fetch failure is UNKNOWN, never a confirmed thin sample, never silently switches source', () => {
-    it('flags pops_unavailable and pushes it into reasons', () => {
+  describe('N5: pops_unavailable — fetch failure vs merely-missing bucket', () => {
+    it('flags pops_unavailable for a genuine fetch failure', () => {
       const { lowConfidence, reasons } = buildRecommendation(
-        mkAlt(1000, undefined, { popsUnavailable: true }),
+        mkAlt(1000, undefined, { popsFetchFailed: true, popsUnavailable: true }),
         null,
       )
       expect(lowConfidence).toBe(true)
       expect(reasons).toContain('pops_unavailable')
     })
 
-    it('does NOT flag thin_sample for an unknown (pops-unavailable) sample', () => {
-      const { reasons } = buildRecommendation(mkAlt(1000, undefined, { popsUnavailable: true }), null)
-      expect(reasons).not.toContain('thin_sample')
-    })
-
-    it('does NOT switch to 130point just because alt pops are unavailable', () => {
-      const { recommended } = buildRecommendation(
-        mkAlt(1000, undefined, { popsUnavailable: true }),
-        mkPoint130(1050, 20),
+    it('flags pops_unavailable for a merely-missing grader+grade bucket too (fetch succeeded)', () => {
+      const { reasons } = buildRecommendation(
+        mkAlt(1000, undefined, { popsFetchFailed: false, popsUnavailable: true }),
+        null,
       )
-      expect(recommended?.source).toBe('alt')
+      expect(reasons).toContain('pops_unavailable')
     })
 
-    it('reports an undefined sampleSize (not 0) when pops are unavailable', () => {
+    it('reports an undefined sampleSize (not 0, not a sum) when pops are unavailable', () => {
       const { recommended } = buildRecommendation(mkAlt(1000, undefined, { popsUnavailable: true }), null)
       expect(recommended?.sampleSize).toBeUndefined()
     })
@@ -227,7 +242,7 @@ describe('buildRecommendation', () => {
   })
 })
 
-describe('computeAltSampleSize (defect I4: alt population is per-grade, not summed across every grade)', () => {
+describe('computeAltSampleSize (N5: only the queried grader+grade bucket counts — never an all-grades sum)', () => {
   const slab: SlabQuery = { game: 'pokemon', cardName: 'Charizard', grader: 'PSA', grade: '9', cardNumber: '4' }
 
   it('uses the queried grader+grade bucket when alt reports one', () => {
@@ -238,23 +253,25 @@ describe('computeAltSampleSize (defect I4: alt population is per-grade, not summ
     expect(computeAltSampleSize(pops, slab)).toBe(5)
   })
 
-  it('falls back to the summed population across all grades when the specific bucket is absent', () => {
+  it('is undefined (NOT a sum) when the specific bucket is absent', () => {
     const pops: CardPop[] = [
       { gradingCompany: 'PSA', gradeNumber: '8', count: 10 },
       { gradingCompany: 'PSA', gradeNumber: '10', count: 20 },
     ]
-    expect(computeAltSampleSize(pops, slab)).toBe(30)
+    expect(computeAltSampleSize(pops, slab)).toBeUndefined()
   })
 
   it('does not match a different grader\'s bucket for the same grade number', () => {
     const pops: CardPop[] = [{ gradingCompany: 'BGS', gradeNumber: '9', count: 9999 }]
-    // No PSA-9 bucket, no other bucket to sum either than the BGS one —
-    // falls back to the (only) total, which is the BGS count; this is the
-    // documented coarser fallback, not a false precise match.
-    expect(computeAltSampleSize(pops, slab)).toBe(9999)
+    expect(computeAltSampleSize(pops, slab)).toBeUndefined()
   })
 
-  it('is 0 for an empty pops array', () => {
-    expect(computeAltSampleSize([], slab)).toBe(0)
+  it('is undefined for an empty pops array', () => {
+    expect(computeAltSampleSize([], slab)).toBeUndefined()
+  })
+
+  it('a confirmed zero-count bucket is a real 0, not undefined', () => {
+    const pops: CardPop[] = [{ gradingCompany: 'PSA', gradeNumber: '9', count: 0 }]
+    expect(computeAltSampleSize(pops, slab)).toBe(0)
   })
 })

@@ -49,7 +49,8 @@ if (args.includes('--json')) {
     console.log(`  matched        : ${v.brand ?? ''} ${v.subject ?? ''} #${v.cardNumber ?? '?'} [${v.gradeKey}]${v.year ? ` (${v.year})` : ''}${v.variety ? ` ${v.variety}` : ''}`)
     const pop = alt.pops.find(p => p.gradingCompany === slab.grader && parseFloat(p.gradeNumber) === parseFloat(slab.grade))
     if (pop) console.log(`  population     : ${slab.grader} ${slab.grade} pop ${pop.count}`)
-    if (alt.popsUnavailable) console.log('  population     : unavailable (fetch failed — sample size unknown)')
+    if (alt.popsFetchFailed) console.log('  population     : unavailable (fetch failed — sample size unknown)')
+    else if (alt.popsUnavailable) console.log(`  population     : alt does not report a ${slab.grader} ${slab.grade} bucket — sample size unknown`)
   } else {
     console.log('alt.xyz          : no match')
   }
