@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { parse130PointSales } from '../src/point130/parse.js'
-import { filterComps, summarizeComps } from '../src/point130/comps.js'
+import { filterComps, summarizeComps, yearIsConfirmed } from '../src/point130/comps.js'
 import { buildQuery } from '../src/point130/client.js'
 import type { SlabQuery, SoldComp } from '../src/types.js'
 
@@ -184,6 +184,144 @@ describe('filterComps', () => {
     expect(kept.length).toBeGreaterThan(10)
     for (const c of kept) expect(c.title).toMatch(/psa[\s:-]*10/i)
   })
+
+  describe('C2: TCGplayer catalog set names must not collapse recall to zero', () => {
+    // Real setNames the consuming app passes — colon-separated, code
+    // prefixes (sv/swsh##/sm/xy), and words eBay sellers never title by.
+    it('"SV: Scarlet & Violet 151" — title carries only the number+denominator, no set words at all', () => {
+      const q = { ...slab, cardNumber: '199/165', setName: 'SV: Scarlet & Violet 151' }
+      expect(filterComps([mk('Charizard Ex 199/165 Psa 10')], q)).toHaveLength(1)
+    })
+
+    it('"SWSH03: Darkness Ablaze" — title carries a distinctive set word ("darkness")', () => {
+      const q = { ...slab, cardName: 'Charizard VMAX', cardNumber: '020/189', setName: 'SWSH03: Darkness Ablaze' }
+      expect(
+        filterComps([mk('2020 Pokemon Charizard VMAX 020/189 Darkness Ablaze PSA 10')], q),
+      ).toHaveLength(1)
+    })
+
+    it('"SWSH: Sword & Shield Promo Cards" — title carries "promo", code prefix + stopwords stripped', () => {
+      const q = { ...slab, cardNumber: 'SWSH050', setName: 'SWSH: Sword & Shield Promo Cards' }
+      expect(filterComps([mk('Pokemon Charizard SWSH050 Black Star Promo PSA 10')], q)).toHaveLength(1)
+    })
+
+    it('"Shining Fates: Shiny Vault" — title carries "shiny"/"vault"', () => {
+      const q = { ...slab, cardNumber: 'SV107', setName: 'Shining Fates: Shiny Vault' }
+      expect(filterComps([mk('Pokemon Charizard SV107 Shiny Vault PSA 10')], q)).toHaveLength(1)
+    })
+
+    it('an exact real-world title with denominator but zero set-name words still passes (was fully dropped)', () => {
+      const q = { ...slab, cardNumber: '199/165', setName: 'SV: Scarlet & Violet 151' }
+      // No "scarlet"/"violet"/"151" anywhere — only the number+denominator.
+      expect(filterComps([mk('Charizard Ex 199/165 Psa 10')], q)).toHaveLength(1)
+    })
+
+    it('a genuinely unrelated set is still rejected (recall widened, not eliminated)', () => {
+      // Bare numerator (no denominator) — the denominator rescue never
+      // applies — and no distinctive set word in the title either.
+      const q = { ...slab, cardNumber: '4', setName: 'SV: Scarlet & Violet 151' }
+      expect(filterComps([mk('Charizard Base Set #4 PSA 10')], q)).toHaveLength(0)
+    })
+
+    it('Base Set + 4/102: denominator match does NOT rescue a Celebrations reprint (all 7 rejected)', () => {
+      const q = { ...slab, cardNumber: '4/102', setName: 'Base Set' }
+      const reprintRows = [
+        mk('2021 Pokemon Celebrations Classic Collection Base Set Charizard 4/102 PSA 10'),
+        mk('Celebrations Classic Collection Charizard 4/102 PSA 10 Base Set'),
+        mk('2021 Charizard 4/102 Celebrations PSA 10'),
+        mk('Pokemon 25th Anniversary Celebrations Base Set Charizard 4/102 PSA 10'),
+        mk('Charizard Base Set 4/102 Classic Collection PSA 10'),
+        mk('2021 Celebrations Charizard 4/102 Base Set PSA 10 Classic Collection'),
+        mk('Base Set Charizard 4/102 25th Celebrations PSA 10'),
+      ]
+      expect(filterComps(reprintRows, q)).toHaveLength(0)
+    })
+
+    it('Base Set + 4/102: a genuine 1999 original still passes', () => {
+      const q = { ...slab, cardNumber: '4/102', setName: 'Base Set' }
+      expect(filterComps([mk('1999 Pokemon Base Set Charizard 4/102 PSA 10')], q)).toHaveLength(1)
+    })
+
+    it('Celebrations query rejects a title that reads as pure original (no reprint marker)', () => {
+      const q = { ...slab, cardNumber: '4/102', setName: 'Celebrations: Classic Collection' }
+      expect(filterComps([mk('1999 Pokemon Base Set Charizard 4/102 PSA 10')], q)).toHaveLength(0)
+    })
+
+    it('Celebrations query accepts a title with the reprint marker', () => {
+      const q = { ...slab, cardNumber: '4/102', setName: 'Celebrations: Classic Collection' }
+      expect(
+        filterComps([mk('2021 Pokemon Celebrations Classic Collection Charizard 4/102 PSA 10')], q),
+      ).toHaveLength(1)
+    })
+  })
+
+  describe('I6: lot "x"-count regex must not flag Mega X/Charizard X mechanic suffixes', () => {
+    it('does not reject "Charizard X 029 Promo"', () => {
+      const q = { ...slab, cardName: 'Charizard X' }
+      expect(filterComps([mk('Charizard X 029 Promo PSA 10')], q)).toHaveLength(1)
+    })
+
+    it('does not reject "Mega Charizard X 029 Black Star Promo"', () => {
+      const q = { ...slab, cardName: 'Mega Charizard X' }
+      expect(filterComps([mk('Mega Charizard X 029 Black Star Promo PSA 10')], q)).toHaveLength(1)
+    })
+
+    it('does not reject "Mega Charizard X 12/100"', () => {
+      const q = { ...slab, cardName: 'Mega Charizard X', cardNumber: '12/100' }
+      expect(filterComps([mk('Mega Charizard X 12/100 PSA 10')], q)).toHaveLength(1)
+    })
+
+    it('still rejects "and others" and true x-counts alongside "Charizard X"', () => {
+      const q = { ...slab, cardName: 'Charizard X' }
+      expect(filterComps([mk('Charizard X 029 Promo PSA 10 and others')], q)).toHaveLength(0)
+      expect(filterComps([mk('Charizard X 029 Promo PSA 10 x4')], q)).toHaveLength(0)
+    })
+  })
+
+  describe('M8: year detection ignores incidental digits (cert numbers), only leading/adjacent-to-set-or-Pokemon', () => {
+    it('does not reject a row whose only 4-digit token is part of a cert number', () => {
+      const q = { ...slab, year: 1999 }
+      // "2014" here is a fragment of a PSA cert number, not the print year —
+      // the title states no print year at all, so this must pass (ambiguous).
+      expect(filterComps([mk('Charizard PSA 10 cert 2014 5531')], q)).toHaveLength(1)
+    })
+
+    it('still rejects a leading contradicting year', () => {
+      const q = { ...slab, year: 1999 }
+      expect(filterComps([mk('2021 Charizard PSA 10')], q)).toHaveLength(0)
+    })
+
+    it('still rejects a year adjacent to "Pokemon"', () => {
+      const q = { ...slab, year: 1999 }
+      expect(filterComps([mk('Charizard Pokemon 2021 PSA 10')], q)).toHaveLength(0)
+    })
+
+    it('still rejects a year adjacent to the set name', () => {
+      const q = { ...slab, year: 1999, setName: 'Celebrations' }
+      expect(filterComps([mk('Charizard Celebrations 2021 PSA 10')], q)).toHaveLength(0)
+    })
+
+    it('still keeps a leading confirming year', () => {
+      const q = { ...slab, year: 1999 }
+      expect(filterComps([mk('1999 Charizard PSA 10')], q)).toHaveLength(1)
+    })
+  })
+
+  describe('yearIsConfirmed (M8: feeds the year_unconfirmed reason upstream)', () => {
+    it('is true when a kept comp states the leading year', () => {
+      const rows = [mk('1999 Charizard PSA 10'), mk('Charizard PSA 10')]
+      expect(yearIsConfirmed(rows, { ...slab, year: 1999 })).toBe(true)
+    })
+
+    it('is false when no kept comp states the year at all (cert-number digits do not count)', () => {
+      const rows = [mk('Charizard PSA 10 cert 2014 5531'), mk('Charizard PSA 10')]
+      expect(yearIsConfirmed(rows, { ...slab, year: 1999 })).toBe(false)
+    })
+
+    it('is true (vacuously) when the query gives no year', () => {
+      expect(yearIsConfirmed([mk('Charizard PSA 10')], slab)).toBe(true)
+    })
+  })
 })
 
 describe('summarizeComps', () => {
@@ -233,6 +371,20 @@ describe('summarizeComps', () => {
         { title: 't', price: 100, url: null, currency: 'USD', date: null, saleType: null },
       ]
       expect(summarizeComps(rows)?.count).toBe(1)
+    })
+  })
+
+  describe('M10: currency is normalized (uppercase+trim); missing/unknown is excluded, not assumed USD', () => {
+    it('is case- and whitespace-insensitive for USD', () => {
+      const s = summarizeComps([mk(100, ' usd '), mk(200, 'Usd')])
+      expect(s?.count).toBe(2)
+      expect(s?.excludedNonUsd).toBe(0)
+    })
+
+    it('treats an empty/missing currency as unknown, not USD — excluded and counted', () => {
+      const s = summarizeComps([mk(100), mk(200, ''), mk(300, '   ')])
+      expect(s?.count).toBe(1)
+      expect(s?.excludedNonUsd).toBe(2)
     })
   })
 })

@@ -1,6 +1,6 @@
 import type { CompSummary, SlabQuery, SoldComp } from '../types.js'
 import { parse130PointSales } from './parse.js'
-import { filterComps, summarizeComps } from './comps.js'
+import { filterComps, summarizeComps, yearIsConfirmed } from './comps.js'
 
 const ENDPOINT = 'https://back.130point.com/sales/'
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
@@ -75,8 +75,19 @@ export function buildQuery(slab: SlabQuery): string {
     .join(' ')
 }
 
-/** Search, filter to plausible matches, summarize. Null when no usable comps. */
+/** Search, filter to plausible matches, summarize. Null when no usable comps.
+ *  When a year was given but no surviving comp's title positively states
+ *  it (passing the year filter only means nothing CONTRADICTED it, which
+ *  is weaker than confirming it — see yearIsConfirmed), the summary is
+ *  flagged `yearUnconfirmed` so callers can surface a 'year_unconfirmed'
+ *  low-confidence reason. */
 export async function get130PointComps(slab: SlabQuery): Promise<CompSummary | null> {
   const rows = await search130Point(buildQuery(slab))
-  return summarizeComps(filterComps(rows, slab))
+  const kept = filterComps(rows, slab)
+  const summary = summarizeComps(kept)
+  if (!summary) return null
+  if (slab.year != null && !yearIsConfirmed(summary.comps, slab)) {
+    return { ...summary, yearUnconfirmed: true }
+  }
+  return summary
 }

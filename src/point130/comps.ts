@@ -4,17 +4,114 @@ import type { CompSummary, SlabQuery, SoldComp } from '../types.js'
  *  Two independent shapes:
  *   - word/phrase tokens ("lot", "bundle", "collection of", "and others",
  *     "+ more")
- *   - digit-adjacent "x" counts ("x4", "4x") — a bare digit count, not
- *     card-mechanic suffixes like "EX"/"GX"/"VMAX" (no digit attached) or
- *     set names like "XY Evolutions"/"Pokemon X & Y" (no digit attached). */
+ *   - digit-adjacent "x" counts ("4x") — a bare digit count, not
+ *     card-mechanic suffixes like "EX"/"GX"/"VMAX"/"Charizard X"/"Mega
+ *     Charizard X" (no digit directly glued to the "x") or set names like
+ *     "XY Evolutions"/"Pokemon X & Y" (no digit attached either). The
+ *     "x then digits" side intentionally requires NO whitespace — "Mega
+ *     Charizard X 029 Promo" has a space between the mechanic suffix "X"
+ *     and the card number, which must NOT read as an "x029" lot count. */
 const LOT_WORD_RE = /\b(lot|bundle|collection of|and others)\b|\+\s*more\b/i
-const LOT_COUNT_RE = /\bx\s?\d+\b|\b\d+\s?x\b/i
+const LOT_COUNT_RE = /\bx\d+\b|\b\d+\s?x\b/i
 const isLot = (title: string): boolean => LOT_WORD_RE.test(title) || LOT_COUNT_RE.test(title)
 
-/** 4-digit year token, e.g. inside "2021 Charizard PSA 10". Used only to
- *  REJECT a title that names a contradicting year — a title with no year
- *  token at all is ambiguous, not rejected. */
-const YEAR_RE = /\b(19|20)\d{2}\b/g
+/** Generic words that appear in TCGplayer catalog set names but never
+ *  meaningfully discriminate an eBay listing title ("Pokemon", "Set",
+ *  "Cards", ...). Deliberately conservative — only words this library has
+ *  verified are noise, not an exhaustive stopword list. */
+const SET_STOPWORDS = new Set(['pokemon', 'the', 'set', 'cards', 'card', 'and', 'tcg'])
+
+/** TCGplayer catalog set-code prefixes ("SV", "SWSH03", "SM", "XY", ...) —
+ *  these never appear in eBay listing titles verbatim and must not be
+ *  treated as a required/distinctive set-name word. */
+const SET_CODE_PREFIX_RE = /^(sv|swsh|sm|xy|bw|dp|hgss|ex)\d*$/i
+
+/** Tokenize a catalog set name into the words that could plausibly appear
+ *  in an eBay title and actually mean something: split on any non-
+ *  alphanumeric run (handles "SV: Scarlet & Violet 151", "SWSH03:
+ *  Darkness Ablaze", "Shining Fates: Shiny Vault"), then drop stopwords
+ *  and code prefixes. */
+function distinctiveSetTokens(setName: string): string[] {
+  return setName
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean)
+    .filter(t => t.length > 1)
+    .filter(t => !SET_STOPWORDS.has(t))
+    .filter(t => !SET_CODE_PREFIX_RE.test(t))
+}
+
+function titleContainsToken(titleLower: string, token: string): boolean {
+  return new RegExp(`\\b${token}\\b`, 'i').test(titleLower)
+}
+
+/** Extract a "numerator/denominator" printed number ("199/165") as two
+ *  numbers, tolerant of leading zeros. Null for numerator-only or
+ *  dashed set-code numbers ("OP01-003"), which don't carry a denominator. */
+function numberDenominator(cardNumber: string | undefined): { num: number; den: number } | null {
+  if (!cardNumber) return null
+  const m = cardNumber.match(/^0*(\d+)\s*\/\s*0*(\d+)$/)
+  if (!m) return null
+  return { num: Number(m[1]), den: Number(m[2]) }
+}
+
+function titleHasNumberWithDenominator(title: string, num: number, den: number): boolean {
+  const re = new RegExp(`(?<!\\d)#?0*${num}\\s*/\\s*0*${den}(?!\\d)`)
+  return re.test(title)
+}
+
+/** Known reprint families where the SAME printed number+denominator is
+ *  reused across two real, differently-valued products — a denominator
+ *  match alone must never disambiguate these; only an explicit set-name
+ *  marker in the title can. Verified case: Base Set (1999) vs the 2021
+ *  Celebrations Classic Collection reprint, which shares Base Set's
+ *  numbering (and, per alt.xyz's own brand text, often even the literal
+ *  words "Base Set" in its description). Add further verified families
+ *  here — do not add unverified ones. */
+const REPRINT_FAMILIES: Array<{ original: RegExp; reprint: RegExp }> = [
+  { original: /\bbase\s*set\b/i, reprint: /\b(celebrations|classic collection|25th)\b/i },
+]
+
+/** True when the query clearly wants one side of a known reprint family
+ *  and the title clearly reads as the OTHER side — checked regardless of
+ *  how the generic token/denominator checks below would otherwise score
+ *  the row, because a shared denominator (or shared "Base Set" wording)
+ *  is exactly what makes these collisions dangerous. */
+function isReprintContradiction(querySetName: string, title: string): boolean {
+  for (const fam of REPRINT_FAMILIES) {
+    const wantsOriginal = fam.original.test(querySetName) && !fam.reprint.test(querySetName)
+    const wantsReprint = fam.reprint.test(querySetName)
+    if (wantsOriginal && fam.reprint.test(title)) return true
+    // A title reads as "clearly original" only when it has no reprint
+    // marker at all — many genuine Celebrations listings also mention
+    // "Base Set" (that's literally what's being reprinted), so "Base Set"
+    // text alone doesn't disqualify it; the ABSENCE of any reprint marker
+    // alongside it does.
+    if (wantsReprint && fam.original.test(title) && !fam.reprint.test(title)) return true
+  }
+  return false
+}
+
+/** Only count a year token that's clearly THE print year, not an
+ *  incidental 4-digit run elsewhere in the title (PSA cert numbers,
+ *  serials, ...): either leading the title (the overwhelmingly common
+ *  eBay convention, "1999 Pokemon Base Set Charizard...") or immediately
+ *  adjacent to "Pokemon" or a distinctive set-name word. */
+function extractRelevantYears(title: string, setName: string | undefined): string[] {
+  const found: string[] = []
+  const leading = title.match(/^\s*((?:19|20)\d{2})\b/)
+  if (leading) found.push(leading[1])
+
+  const anchors = ['pokemon', ...(setName ? distinctiveSetTokens(setName) : [])]
+  for (const anchor of anchors) {
+    const re = new RegExp(`\\b((?:19|20)\\d{2})\\s+${anchor}\\b|\\b${anchor}\\s+((?:19|20)\\d{2})\\b`, 'gi')
+    for (const m of title.matchAll(re)) {
+      const y = m[1] ?? m[2]
+      if (y) found.push(y)
+    }
+  }
+  return found
+}
 
 /**
  * Keep only rows that plausibly ARE the queried slab:
@@ -37,10 +134,8 @@ export function filterComps(comps: SoldComp[], slab: SlabQuery): SoldComp[] {
   // titles split apart ("OP-01 … #003"), so match prefix and numeric tail
   // independently.
   const numberMatches = buildNumberMatcher(slab.cardNumber)
-  const setWords = (slab.setName ?? '')
-    .toLowerCase()
-    .split(/\s+/)
-    .filter(w => w.length > 2)
+  const distinctiveTokens = slab.setName ? distinctiveSetTokens(slab.setName) : []
+  const denom = numberDenominator(slab.cardNumber)
 
   return comps.filter(c => {
     const t = c.title.toLowerCase()
@@ -50,17 +145,47 @@ export function filterComps(comps: SoldComp[], slab: SlabQuery): SoldComp[] {
     // Each identity signal the caller actually gave is independently
     // required — AND, not OR. Giving both a number and a set name must
     // only ever narrow the accepted rows, never widen them past what
-    // either alone would accept (defect: this used to be an OR-rescue,
-    // where a set-name match could rescue a row that failed the number
-    // check, which widens acceptance instead of narrowing it).
+    // either alone would accept.
     if (numberMatches && !numberMatches(c.title)) return false
-    if (setWords.length > 0 && !setWords.every(w => t.includes(w))) return false
+
+    if (slab.setName) {
+      // A known reprint-family contradiction rejects outright, regardless
+      // of how the generic checks below would score the row (see
+      // isReprintContradiction).
+      if (isReprintContradiction(slab.setName, c.title)) return false
+      // The printed number WITH its denominator ("199/165") is specific
+      // enough to a set that it satisfies the set requirement on its own
+      // — eBay titles very often carry the number but not the set name.
+      // Otherwise, require at least one distinctive set-name word (not
+      // EVERY raw whitespace-split word — TCGplayer catalog set names like
+      // "SV: Scarlet & Violet 151" have punctuation and code-prefix words
+      // ("SV") that never appear in a listing title, which used to
+      // collapse recall to zero).
+      const numberSatisfiesSet = denom != null && titleHasNumberWithDenominator(c.title, denom.num, denom.den)
+      const hasCheck = distinctiveTokens.length > 0 || numberSatisfiesSet
+      if (hasCheck) {
+        const tokenMatch = distinctiveTokens.some(tok => titleContainsToken(t, tok))
+        if (!numberSatisfiesSet && !tokenMatch) return false
+      }
+    }
+
     if (slab.year != null) {
-      const titleYears = c.title.match(YEAR_RE)
-      if (titleYears && titleYears.length > 0 && !titleYears.includes(String(slab.year))) return false
+      const titleYears = extractRelevantYears(c.title, slab.setName)
+      if (titleYears.length > 0 && !titleYears.includes(String(slab.year))) return false
     }
     return true
   })
+}
+
+/** True when at least one of the given (already-filtered) comps' titles
+ *  positively states the query's year (see extractRelevantYears) — as
+ *  opposed to merely not contradicting it. Vacuously true when the query
+ *  gives no year. Feeds the 'year_unconfirmed' reason upstream: passing
+ *  the year FILTER only means nothing contradicted it, which is weaker
+ *  than confirmation. */
+export function yearIsConfirmed(comps: SoldComp[], slab: SlabQuery): boolean {
+  if (slab.year == null) return true
+  return comps.some(c => extractRelevantYears(c.title, slab.setName).includes(String(slab.year)))
 }
 
 function buildNumberMatcher(cardNumber: string | undefined): ((title: string) => boolean) | null {
@@ -85,17 +210,25 @@ function buildNumberMatcher(cardNumber: string | undefined): ((title: string) =>
   return title => literal.test(title)
 }
 
+/** Uppercase+trim for a tolerant currency compare ("usd", " USD ", "Usd"
+ *  all count). An empty/missing value is treated as UNKNOWN, not assumed
+ *  USD — see summarizeComps. */
+function normalizeCurrency(raw: string): string {
+  return (raw ?? '').trim().toUpperCase()
+}
+
 /**
  * Median-based summary with IQR outlier trim. Trim only when we have
  * enough rows for quartiles to mean anything (>= 8); below that a bad
  * outlier can't hide anyway and the median resists it.
  *
- * Non-USD rows (GBP/EUR/CAD/...) are excluded from the summary — no FX
- * conversion is performed, so mixing them into a USD median would be
- * silently wrong. They're still counted, via `excludedNonUsd`.
+ * Non-USD rows (GBP/EUR/CAD/...) — and rows with an empty/unrecognized
+ * currency value, treated as unknown rather than assumed USD — are
+ * excluded from the summary. No FX conversion is performed. They're
+ * still counted, via `excludedNonUsd`.
  */
 export function summarizeComps(comps: SoldComp[]): CompSummary | null {
-  const usd = comps.filter(c => c.currency === 'USD')
+  const usd = comps.filter(c => normalizeCurrency(c.currency) === 'USD')
   const excludedNonUsd = comps.length - usd.length
   if (usd.length === 0) return null
 
