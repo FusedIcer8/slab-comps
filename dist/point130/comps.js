@@ -21,19 +21,40 @@ const SET_STOPWORDS = new Set(['pokemon', 'the', 'set', 'cards', 'card', 'and', 
  *  these never appear in eBay listing titles verbatim and must not be
  *  treated as a required/distinctive set-name word. */
 const SET_CODE_PREFIX_RE = /^(sv|swsh|sm|xy|bw|dp|hgss|ex)\d*$/i;
+/** Words that recur across MANY different real set names ("Promo",
+ *  "Collection", "Fates" — Hidden Fates vs Shining Fates; "Base" — Base
+ *  Set vs Base Set 2; "Vault" — Shining Fates: Shiny Vault vs other
+ *  vault-style subsets) and so, alone, cannot discriminate one set from
+ *  another. Distinct from SET_STOPWORDS (words that never mean anything
+ *  at all) — these DO belong to the set name, they're just not unique
+ *  enough on their own to accept a title on. See distinctiveSetTokens'
+ *  "require every NON-generic token" rule below. */
+const GENERIC_SET_TOKENS = new Set([
+    'promo', 'promos', 'collection', 'classic', 'fates', 'base', 'shiny',
+    'star', 'black', 'cards', 'series', 'pack', 'premium', 'vault', 'special',
+]);
 /** Tokenize a catalog set name into the words that could plausibly appear
  *  in an eBay title and actually mean something: split on any non-
  *  alphanumeric run (handles "SV: Scarlet & Violet 151", "SWSH03:
  *  Darkness Ablaze", "Shining Fates: Shiny Vault"), then drop stopwords
- *  and code prefixes. */
+ *  and code prefixes. Keeps single-digit tokens ("2" in "Base Set 2") —
+ *  short but meaningful, unlike a single stray letter. */
 function distinctiveSetTokens(setName) {
     return setName
         .toLowerCase()
         .split(/[^a-z0-9]+/)
         .filter(Boolean)
-        .filter(t => t.length > 1)
+        .filter(t => t.length > 1 || /^\d$/.test(t))
         .filter(t => !SET_STOPWORDS.has(t))
         .filter(t => !SET_CODE_PREFIX_RE.test(t));
+}
+/** The subset of distinctive tokens that actually discriminate this set
+ *  from others (see GENERIC_SET_TOKENS). Falls back to every distinctive
+ *  token when the set name happens to be made entirely of generic ones —
+ *  a query must never end up requiring nothing at all. */
+function nonGenericSetTokens(tokens) {
+    const nonGeneric = tokens.filter(t => !GENERIC_SET_TOKENS.has(t));
+    return nonGeneric.length > 0 ? nonGeneric : tokens;
 }
 function titleContainsToken(titleLower, token) {
     return new RegExp(`\\b${token}\\b`, 'i').test(titleLower);
@@ -53,6 +74,26 @@ function titleHasNumberWithDenominator(title, num, den) {
     const re = new RegExp(`(?<!\\d)#?0*${num}\\s*/\\s*0*${den}(?!\\d)`);
     return re.test(title);
 }
+/** Extract a letter-prefixed printed number ("SWSH050", "TG15", "GG70",
+ *  "SV107", "SM210", "XY17", "H4") as a prefix+digits pair, tolerant of
+ *  leading zeros. This kind of number identifies its set on its own — no
+ *  other card shares "SWSH050". Only the numerator side is used (a
+ *  "SV107/SV122"-style range form's denominator is dropped, same as
+ *  buildNumberMatcher already does for the NUMBER match itself), so this
+ *  also covers that range form via its numerator. */
+function prefixedNumberInfo(cardNumber) {
+    if (!cardNumber)
+        return null;
+    const printed = cardNumber.split('/')[0].trim();
+    const m = printed.match(/^([A-Za-z]+)-?0*(\d+)$/);
+    if (!m)
+        return null;
+    return { prefix: m[1], digits: Number(m[2]) };
+}
+function titleHasPrefixedNumber(title, prefix, digits) {
+    const re = new RegExp(`\\b${prefix}[-\\s]?0*${digits}\\b`, 'i');
+    return re.test(title);
+}
 /** Known reprint families where the SAME printed number+denominator is
  *  reused across two real, differently-valued products — a denominator
  *  match alone must never disambiguate these; only an explicit set-name
@@ -64,23 +105,29 @@ function titleHasNumberWithDenominator(title, num, den) {
 const REPRINT_FAMILIES = [
     { original: /\bbase\s*set\b/i, reprint: /\b(celebrations|classic collection|25th)\b/i },
 ];
-/** True when the query clearly wants one side of a known reprint family
- *  and the title clearly reads as the OTHER side — checked regardless of
- *  how the generic token/denominator checks below would otherwise score
- *  the row, because a shared denominator (or shared "Base Set" wording)
- *  is exactly what makes these collisions dangerous. */
+/** True when the query's setName matches a known reprint family's REPRINT
+ *  side (e.g. "Celebrations: Classic Collection"). For such a query, a
+ *  title must carry the reprint marker itself — a shared/matching
+ *  denominator (or even the ORIGINAL side's own wording, like "Base Set",
+ *  which the reprint's own listings often also carry) is never enough on
+ *  its own; too many genuinely-original, unmarked titles ("1999 Pokemon
+ *  Charizard Holo 4/102 PSA 10") otherwise slip through and push a
+ *  reprint-price offer up toward the original's far higher value. */
+function reprintFamilyQuery(querySetName) {
+    return REPRINT_FAMILIES.find(fam => fam.reprint.test(querySetName)) ?? null;
+}
+/** True when the query clearly wants the ORIGINAL side of a known reprint
+ *  family and the title clearly reads as the reprint — checked regardless
+ *  of how the generic token/denominator checks below would otherwise
+ *  score the row, because a shared denominator (or shared "Base Set"
+ *  wording) is exactly what makes these collisions dangerous. The
+ *  reverse direction (query wants the reprint) is handled by
+ *  reprintFamilyQuery instead, which requires the marker outright rather
+ *  than merely rejecting a contradiction — see N1. */
 function isReprintContradiction(querySetName, title) {
     for (const fam of REPRINT_FAMILIES) {
         const wantsOriginal = fam.original.test(querySetName) && !fam.reprint.test(querySetName);
-        const wantsReprint = fam.reprint.test(querySetName);
         if (wantsOriginal && fam.reprint.test(title))
-            return true;
-        // A title reads as "clearly original" only when it has no reprint
-        // marker at all — many genuine Celebrations listings also mention
-        // "Base Set" (that's literally what's being reprinted), so "Base Set"
-        // text alone doesn't disqualify it; the ABSENCE of any reprint marker
-        // alongside it does.
-        if (wantsReprint && fam.original.test(title) && !fam.reprint.test(title))
             return true;
     }
     return false;
@@ -115,10 +162,13 @@ function extractRelevantYears(title, setName) {
  */
 export function filterComps(comps, slab) {
     const gradeRe = new RegExp(`\\b${slab.grader}\\b[\\s:-]*${slab.grade.replace('.', '\\.')}(?!\\.?\\d)`, 'i');
-    const nameWords = slab.cardName
-        .toLowerCase()
-        .split(/\s+/)
-        .filter(w => w.length > 1);
+    // Short alnum suffix words (V, X, GX, EX, ...) are kept (not dropped as
+    // "too short") and matched on a word boundary rather than substring —
+    // otherwise "Charizard V" silently accepts a "Charizard VMAX" title
+    // (V is a substring of VMAX) or a plain "Charizard" title (V dropped
+    // entirely). Longer/punctuated words keep simple substring matching.
+    const nameWords = slab.cardName.toLowerCase().split(/\s+/).filter(Boolean);
+    const nameWordMatches = (t, w) => w.length <= 2 && /^[a-z0-9]+$/.test(w) ? new RegExp(`\\b${w}\\b`, 'i').test(t) : t.includes(w);
     // "008" must match "#008", "008" and "8", but never digits inside a
     // longer number ("2008"). Set-code numbers ("OP01-003") appear in eBay
     // titles split apart ("OP-01 … #003"), so match prefix and numeric tail
@@ -126,13 +176,15 @@ export function filterComps(comps, slab) {
     const numberMatches = buildNumberMatcher(slab.cardNumber);
     const distinctiveTokens = slab.setName ? distinctiveSetTokens(slab.setName) : [];
     const denom = numberDenominator(slab.cardNumber);
+    const prefixed = prefixedNumberInfo(slab.cardNumber);
+    const reprintFam = slab.setName ? reprintFamilyQuery(slab.setName) : null;
     return comps.filter(c => {
         const t = c.title.toLowerCase();
         if (isLot(c.title))
             return false;
         if (!gradeRe.test(c.title))
             return false;
-        if (!nameWords.every(w => t.includes(w)))
+        if (!nameWords.every(w => nameWordMatches(t, w)))
             return false;
         // Each identity signal the caller actually gave is independently
         // required — AND, not OR. Giving both a number and a set name must
@@ -141,25 +193,60 @@ export function filterComps(comps, slab) {
         if (numberMatches && !numberMatches(c.title))
             return false;
         if (slab.setName) {
-            // A known reprint-family contradiction rejects outright, regardless
-            // of how the generic checks below would score the row (see
-            // isReprintContradiction).
-            if (isReprintContradiction(slab.setName, c.title))
-                return false;
-            // The printed number WITH its denominator ("199/165") is specific
-            // enough to a set that it satisfies the set requirement on its own
-            // — eBay titles very often carry the number but not the set name.
-            // Otherwise, require at least one distinctive set-name word (not
-            // EVERY raw whitespace-split word — TCGplayer catalog set names like
-            // "SV: Scarlet & Violet 151" have punctuation and code-prefix words
-            // ("SV") that never appear in a listing title, which used to
-            // collapse recall to zero).
-            const numberSatisfiesSet = denom != null && titleHasNumberWithDenominator(c.title, denom.num, denom.den);
-            const hasCheck = distinctiveTokens.length > 0 || numberSatisfiesSet;
-            if (hasCheck) {
-                const tokenMatch = distinctiveTokens.some(tok => titleContainsToken(t, tok));
-                if (!numberSatisfiesSet && !tokenMatch)
+            if (reprintFam) {
+                // The query wants the REPRINT side of a known family (e.g.
+                // "Celebrations: Classic Collection") — the title MUST carry the
+                // reprint marker itself. A matching/shared denominator (or even
+                // the original's own wording, which reprint listings often also
+                // carry) is never enough — too many genuinely-original, unmarked
+                // titles otherwise slip through and inflate a reprint quote
+                // toward the original's far higher value (money moves the wrong
+                // way). See N1.
+                if (!reprintFam.reprint.test(c.title))
                     return false;
+            }
+            else {
+                // A known reprint-family contradiction rejects outright (query
+                // wants the ORIGINAL side, title reads as the reprint).
+                if (isReprintContradiction(slab.setName, c.title))
+                    return false;
+                // The printed number WITH its denominator ("199/165"), or a
+                // letter-prefixed number ("SWSH050") matched literally, is
+                // specific enough to a set that it satisfies the set requirement
+                // on its own — eBay titles very often carry the number but not
+                // the set name.
+                const numberSatisfiesSet = (denom != null && titleHasNumberWithDenominator(c.title, denom.num, denom.den)) ||
+                    (prefixed != null && titleHasPrefixedNumber(c.title, prefixed.prefix, prefixed.digits));
+                if (!numberSatisfiesSet) {
+                    if (slab.cardNumber) {
+                        // A number WAS given, just not one that (via this title)
+                        // confirms the set on its own — the independent number-match
+                        // check above already did real narrowing, so a single
+                        // NON-GENERIC distinctive token is an adequate rescue here
+                        // (not EVERY raw whitespace-split word — TCGplayer catalog
+                        // set names like "SV: Scarlet & Violet 151" have punctuation
+                        // and code-prefix words ("SV") that never appear in a listing
+                        // title, which used to collapse recall to zero). Still
+                        // excludes generic tokens ("Fates", "Base", …) — otherwise a
+                        // numbered "Hidden Fates #9" query would accept a "Shining
+                        // Fates" title on "fates" alone.
+                        const rescue = nonGenericSetTokens(distinctiveTokens);
+                        if (rescue.length > 0 && !rescue.some(tok => titleContainsToken(t, tok))) {
+                            return false;
+                        }
+                    }
+                    else {
+                        // No number at all to lean on — require EVERY non-generic
+                        // set-name token (falling back to every distinctive token
+                        // when the set name happens to be made entirely of generic
+                        // ones). A single generic word ("Promo", "Fates", "Base", …)
+                        // recurs across too many unrelated real sets to accept a row
+                        // on its own — see N2.
+                        const required = nonGenericSetTokens(distinctiveTokens);
+                        if (required.length > 0 && !required.every(tok => titleContainsToken(t, tok)))
+                            return false;
+                    }
+                }
             }
         }
         if (slab.year != null) {
